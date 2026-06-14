@@ -139,6 +139,7 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     database: str
+    db_path: Optional[str] = None
 
 
 class AudioStatusResponse(BaseModel):

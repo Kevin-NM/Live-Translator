@@ -1,13 +1,23 @@
+from pathlib import Path
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///./live_translator.db"
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+_DATA_DIR = _BACKEND_DIR / "data"
+_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+_DB_PATH = _DATA_DIR / "live_translator.db"
+SQLALCHEMY_DATABASE_URL = f"sqlite:///{_DB_PATH.as_posix()}"
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+
+def get_db_path() -> str:
+    return str(_DB_PATH)
 
 
 def get_db():

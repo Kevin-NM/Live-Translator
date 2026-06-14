@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from app.schemas import HealthResponse
+from app.database import get_db_path
 
 router = APIRouter()
 
@@ -8,6 +9,7 @@ router = APIRouter()
 async def health_check():
     return HealthResponse(
         status="ok",
-        version="0.1.0",
-        database="sqlite"
+        version="0.2.0",
+        database="sqlite",
+        db_path=get_db_path(),
     )

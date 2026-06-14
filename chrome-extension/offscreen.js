@@ -1,15 +1,15 @@
+let isCapturing = false;
+let currentSessionId = null;
+let currentTabId = null;
 let ws = null;
 let audioContext = null;
 let mediaStream = null;
 let scriptNode = null;
+let sourceNode = null;
 let chunksSent = 0;
 let lastChunkSize = 0;
 let lastChunkTime = null;
-let recording = false;
-let sessionId = null;
-let backendWsUrl = null;
 let pcmBuffer = new Float32Array(0);
-let sourceNode = null;
 
 const CHUNK_SAMPLES = 48000;
 
@@ -24,14 +24,14 @@ function reportStatus(state, detail) {
     chunksSent,
     lastChunkSize,
     lastChunkTime,
-    sessionId,
+    sessionId: currentSessionId,
     timestamp: new Date().toISOString(),
   };
   log('status:', state, detail || '');
   try {
     chrome.runtime.sendMessage({ type: 'offscreen_status', payload });
   } catch (e) {
-    log('failed to report status:', e.message);
+    log('reportStatus failed:', e.message);
   }
 }
 
@@ -39,9 +39,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   log('received message:', msg.type);
 
   if (msg.type === 'START_RECORDING') {
-    sessionId = msg.sessionId;
-    backendWsUrl = msg.backendUrl || `ws://127.0.0.1:8787/ws/audio/${sessionId}`;
-    startRecording(msg.streamId)
+    handleStart(msg.sessionId, msg.tabId, msg.streamId, msg.backendUrl)
       .then(() => sendResponse({ ok: true }))
       .catch(e => {
         log('START_RECORDING failed:', e.message);
@@ -52,18 +50,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'STOP_RECORDING') {
-    stopRecording();
+    stopCurrentCapture('user stopped');
     sendResponse({ ok: true });
     return true;
   }
 
   if (msg.type === 'GET_STATUS') {
     sendResponse({
-      recording,
+      isCapturing,
+      currentSessionId,
+      currentTabId,
       chunksSent,
       lastChunkSize,
       lastChunkTime,
-      sessionId,
       wsState: ws ? ws.readyState : -1,
       sampleRate: audioContext ? audioContext.sampleRate : null,
       pcmBuffered: pcmBuffer.length,
@@ -72,73 +71,54 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-async function startRecording(streamId) {
-  if (recording) {
-    log('already recording');
-    return;
+async function handleStart(sessionId, tabId, streamId, backendWsUrl) {
+  if (isCapturing) {
+    if (currentSessionId === sessionId && currentTabId === tabId) {
+      log('already capturing same session, skip');
+      reportStatus('capturing', 'Already capturing');
+      return;
+    }
+    log('different session, stopping current capture first');
+    stopCurrentCapture('switching session');
+    await new Promise(r => setTimeout(r, 300));
   }
 
-  log('START_RECORDING streamId=', streamId);
-  log('backendWsUrl=', backendWsUrl);
+  log('START sessionId=', sessionId, 'tabId=', tabId, 'streamId=', streamId);
+
+  const wsUrl = backendWsUrl || `ws://127.0.0.1:8787/ws/audio/${sessionId}`;
 
   reportStatus('connecting', 'Connecting WebSocket...');
 
-  ws = new WebSocket(backendWsUrl);
+  ws = new WebSocket(wsUrl);
   ws.binaryType = 'arraybuffer';
 
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('WebSocket open timed out')), 8000);
-    ws.onopen = () => {
-      clearTimeout(timeout);
-      log('WebSocket OPEN');
-      resolve();
-    };
-    ws.onerror = () => {
-      clearTimeout(timeout);
-      log('WebSocket ERROR during open');
-      reject(new Error('WebSocket connection failed. Is backend running on 8787?'));
-    };
+    ws.onopen = () => { clearTimeout(timeout); log('WebSocket OPEN'); resolve(); };
+    ws.onerror = () => { clearTimeout(timeout); reject(new Error('WebSocket connection failed. Is backend running?')); };
   });
 
   ws.onclose = (e) => {
-    log('WebSocket CLOSED code=', e.code, 'reason=', e.reason, 'wasClean=', e.wasClean);
-    if (recording) {
-      reportStatus('error', 'WebSocket closed: code=' + e.code + ' reason=' + (e.reason || 'none'));
+    log('WebSocket CLOSED code=', e.code, 'reason=', e.reason);
+    if (isCapturing) {
+      reportStatus('error', 'WebSocket closed: code=' + e.code);
       stopMediaCapture();
-      recording = false;
+      isCapturing = false;
     }
   };
-
-  ws.onerror = (e) => {
-    log('WebSocket ERROR (after open)');
-    reportStatus('error', 'WebSocket error');
-  };
+  ws.onerror = () => { log('WebSocket ERROR'); reportStatus('error', 'WebSocket error'); };
 
   reportStatus('capturing', 'Getting tab audio...');
 
   log('getUserMedia with streamId...');
-  try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        mandatory: {
-          chromeMediaSource: 'tab',
-          chromeMediaSourceId: streamId,
-        },
-      },
-      video: false,
-    });
-    log('getUserMedia SUCCESS, tracks:', mediaStream.getTracks().length);
-  } catch (e) {
-    log('getUserMedia FAILED:', e.message);
-    throw new Error('getUserMedia failed: ' + e.message);
-  }
+  mediaStream = await navigator.mediaDevices.getUserMedia({
+    audio: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId } },
+    video: false,
+  });
+  log('getUserMedia SUCCESS, tracks:', mediaStream.getTracks().length);
 
   mediaStream.getAudioTracks().forEach(track => {
-    track.onended = () => {
-      log('audio track ENDED');
-      reportStatus('stopped', 'Tab audio track ended');
-      stopRecording();
-    };
+    track.onended = () => { log('audio track ENDED'); stopCurrentCapture('track ended'); };
     log('audio track:', track.label, 'enabled=', track.enabled);
   });
 
@@ -146,18 +126,15 @@ async function startRecording(streamId) {
   log('AudioContext sampleRate:', audioContext.sampleRate);
 
   sourceNode = audioContext.createMediaStreamSource(mediaStream);
-
-  const bufferSize = 4096;
-  scriptNode = audioContext.createScriptProcessor(bufferSize, 1, 1);
+  scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
 
   scriptNode.onaudioprocess = (e) => {
-    if (!recording) return;
-
+    if (!isCapturing) return;
     const inputData = e.inputBuffer.getChannelData(0);
-    const newBuffer = new Float32Array(pcmBuffer.length + inputData.length);
-    newBuffer.set(pcmBuffer);
-    newBuffer.set(inputData, pcmBuffer.length);
-    pcmBuffer = newBuffer;
+    const newBuf = new Float32Array(pcmBuffer.length + inputData.length);
+    newBuf.set(pcmBuffer);
+    newBuf.set(inputData, pcmBuffer.length);
+    pcmBuffer = newBuf;
 
     while (pcmBuffer.length >= CHUNK_SAMPLES) {
       const chunk = pcmBuffer.slice(0, CHUNK_SAMPLES);
@@ -171,9 +148,7 @@ async function startRecording(streamId) {
 
       const uint8 = new Uint8Array(int16.buffer);
       let binary = '';
-      for (let i = 0; i < uint8.length; i++) {
-        binary += String.fromCharCode(uint8[i]);
-      }
+      for (let i = 0; i < uint8.length; i++) binary += String.fromCharCode(uint8[i]);
       const base64 = btoa(binary);
 
       if (ws && ws.readyState === WebSocket.OPEN) {
@@ -189,17 +164,14 @@ async function startRecording(streamId) {
           chunksSent++;
           lastChunkSize = int16.byteLength;
           lastChunkTime = new Date().toISOString();
-          log('PCM chunk SENT, total:', chunksSent, 'samples:', chunk.length, 'bytes:', int16.byteLength, 'sr:', audioContext.sampleRate);
-
           if (chunksSent % 5 === 0) {
+            log('PCM chunks sent:', chunksSent, 'buf:', pcmBuffer.length);
             reportStatus('capturing', `Sent ${chunksSent} PCM chunks`);
           }
         } catch (err) {
           log('chunk send FAILED:', err.message);
           reportStatus('error', 'Send failed: ' + err.message);
         }
-      } else {
-        log('WebSocket not open, readyState=', ws ? ws.readyState : 'null');
       }
     }
   };
@@ -207,63 +179,43 @@ async function startRecording(streamId) {
   sourceNode.connect(scriptNode);
   scriptNode.connect(audioContext.destination);
 
-  recording = true;
+  isCapturing = true;
+  currentSessionId = sessionId;
+  currentTabId = tabId;
   chunksSent = 0;
   pcmBuffer = new Float32Array(0);
-  log('AudioContext + ScriptProcessorNode STARTED, sampleRate:', audioContext.sampleRate);
+
+  log('PCM capture STARTED, sampleRate:', audioContext.sampleRate);
   reportStatus('capturing', 'PCM recording started (sr=' + audioContext.sampleRate + ')');
 }
 
 function stopMediaCapture() {
-  if (scriptNode) {
-    try { scriptNode.disconnect(); } catch (e) { log('scriptNode disconnect error:', e.message); }
-    scriptNode = null;
-  }
-  if (sourceNode) {
-    try { sourceNode.disconnect(); } catch (e) { log('sourceNode disconnect error:', e.message); }
-    sourceNode = null;
-  }
-  if (audioContext) {
-    try { audioContext.close(); } catch (e) { log('audioContext close error:', e.message); }
-    audioContext = null;
-  }
+  if (scriptNode) { try { scriptNode.disconnect(); } catch {} scriptNode = null; }
+  if (sourceNode) { try { sourceNode.disconnect(); } catch {} sourceNode = null; }
+  if (audioContext) { try { audioContext.close(); } catch {} audioContext = null; }
   if (mediaStream) {
-    log('stopping media tracks...');
-    mediaStream.getTracks().forEach(t => {
-      try { t.stop(); } catch (e) { log('track stop error:', e.message); }
-    });
+    mediaStream.getTracks().forEach(t => { try { t.stop(); } catch {} });
     mediaStream = null;
   }
   pcmBuffer = new Float32Array(0);
 }
 
-function stopRecording() {
-  if (!recording && !scriptNode) {
-    log('not recording, nothing to stop');
+function stopCurrentCapture(reason) {
+  if (!isCapturing && !scriptNode) {
+    log('not capturing, nothing to stop');
     return;
   }
-
-  log('STOP_RECORDING');
+  log('STOP_CAPTURE reason:', reason);
 
   stopMediaCapture();
 
   if (ws) {
-    log('sending stop to backend ws...');
-    try {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'stop' }));
-      }
-    } catch (e) { log('stop send error:', e.message); }
-
-    setTimeout(() => {
-      if (ws) {
-        log('closing WebSocket');
-        try { ws.close(1000, 'user stopped'); } catch (e) { log('ws close error:', e.message); }
-        ws = null;
-      }
-    }, 500);
+    try { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'stop' })); } catch {}
+    setTimeout(() => { try { ws.close(1000, reason || 'stopped'); } catch {} ws = null; }, 300);
   }
 
-  recording = false;
-  reportStatus('stopped', 'Capture stopped. Sent ' + chunksSent + ' PCM chunks total.');
+  isCapturing = false;
+  currentSessionId = null;
+  currentTabId = null;
+  reportStatus('stopped', 'Capture stopped. Sent ' + chunksSent + ' chunks. Reason: ' + (reason || 'unknown'));
 }

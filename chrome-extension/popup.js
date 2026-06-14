@@ -4,6 +4,7 @@ const el = {
   statusDot: document.getElementById('statusDot'),
   statusText: document.getElementById('statusText'),
   errorBox: document.getElementById('errorBox'),
+  msgOk: document.getElementById('msgOk'),
   tabTitle: document.getElementById('tabTitle'),
   tabUrl: document.getElementById('tabUrl'),
   srcLang: document.getElementById('srcLang'),
@@ -11,10 +12,13 @@ const el = {
   btnCreateSession: document.getElementById('btnCreateSession'),
   btnStart: document.getElementById('btnStart'),
   btnStop: document.getElementById('btnStop'),
+  btnReset: document.getElementById('btnReset'),
   backendStatus: document.getElementById('backendStatus'),
   captureTime: document.getElementById('captureTime'),
   dbgSessionId: document.getElementById('dbgSessionId'),
   dbgTabId: document.getElementById('dbgTabId'),
+  dbgOffExists: document.getElementById('dbgOffExists'),
+  dbgCaptureStatus: document.getElementById('dbgCaptureStatus'),
   dbgWsState: document.getElementById('dbgWsState'),
   dbgChunks: document.getElementById('dbgChunks'),
   dbgLastSize: document.getElementById('dbgLastSize'),
@@ -31,55 +35,63 @@ let timerInterval = null;
 function setStatus(state, text) {
   el.statusDot.className = 'status-dot ' + state;
   el.statusText.textContent = text;
-  console.log('[POPUP] status:', state, text);
 }
 
 function showError(msg) {
   el.errorBox.textContent = msg;
   el.errorBox.style.display = msg ? 'block' : 'none';
-  if (msg) console.error('[POPUP] error:', msg);
+}
+
+function showOk(msg) {
+  el.msgOk.textContent = msg;
+  el.msgOk.style.display = msg ? 'block' : 'none';
+  if (msg) setTimeout(() => { el.msgOk.style.display = 'none'; }, 3000);
 }
 
 function updateDebug(info) {
   if (info.sessionId != null) el.dbgSessionId.textContent = info.sessionId;
   if (info.tabId != null) el.dbgTabId.textContent = info.tabId;
+  if (info.offscreenExists != null) {
+    el.dbgOffExists.textContent = info.offscreenExists ? 'true' : 'false';
+    el.dbgOffExists.className = 'value ' + (info.offscreenExists ? 'ok' : 'err');
+  }
+  if (info.captureStatus != null) {
+    el.dbgCaptureStatus.textContent = info.captureStatus;
+    el.dbgCaptureStatus.className = 'value ' + (info.captureStatus === 'capturing' ? 'ok' : info.captureStatus === 'error' ? 'err' : '');
+  }
   if (info.chunksSent != null) el.dbgChunks.textContent = info.chunksSent;
-  if (info.lastChunkSize != null) el.dbgLastSize.textContent = info.lastChunkSize + ' bytes';
-  if (info.lastChunkTime != null) el.dbgLastTime.textContent = new Date(info.lastChunkTime).toLocaleTimeString();
-  if (info.error != null) el.dbgError.textContent = info.error;
+  if (info.lastChunkSize != null) el.dbgLastSize.textContent = info.lastChunkSize > 0 ? info.lastChunkSize + ' bytes' : '-';
+  if (info.lastChunkTime != null) el.dbgLastTime.textContent = info.lastChunkTime ? new Date(info.lastChunkTime).toLocaleTimeString() : '-';
+  if (info.error != null) {
+    el.dbgError.textContent = info.error || '-';
+    el.dbgError.className = 'value ' + (info.error ? 'err' : '');
+  }
   if (info.wsState != null) {
     const states = ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'];
     el.dbgWsState.textContent = states[info.wsState] || info.wsState;
+    el.dbgWsState.className = 'value ' + (info.wsState === 1 ? 'ok' : '');
   }
 }
 
 function updateCaptureTime() {
   if (!captureStartTime) return;
-  const elapsed = Math.floor((Date.now() - captureStartTime) / 1000);
-  const min = Math.floor(elapsed / 60);
-  const sec = elapsed % 60;
-  el.captureTime.textContent = `${min}:${sec.toString().padStart(2, '0')}`;
+  const s = Math.floor((Date.now() - captureStartTime) / 1000);
+  el.captureTime.textContent = `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
 }
 
 async function checkBackend() {
   try {
-    const res = await fetch(`${BACKEND_URL}/api/health`);
-    if (res.ok) {
-      el.backendStatus.textContent = 'OK';
-      el.backendStatus.style.color = '#22c55e';
-      return true;
-    }
+    const r = await fetch(`${BACKEND_URL}/api/health`);
+    if (r.ok) { el.backendStatus.textContent = 'OK'; el.backendStatus.style.color = '#22c55e'; return true; }
   } catch {}
-  el.backendStatus.textContent = 'Offline';
-  el.backendStatus.style.color = '#ef4444';
-  return false;
+  el.backendStatus.textContent = 'Offline'; el.backendStatus.style.color = '#ef4444'; return false;
 }
 
 async function loadSessions() {
   try {
-    const res = await fetch(`${BACKEND_URL}/api/sessions`);
-    if (!res.ok) return;
-    const sessions = await res.json();
+    const r = await fetch(`${BACKEND_URL}/api/sessions`);
+    if (!r.ok) return;
+    const sessions = await r.json();
     el.sessionSelect.innerHTML = '';
     const active = sessions.filter(s => s.status === 'active' && s.source_type === 'chrome_tab');
     if (active.length === 0) {
@@ -87,14 +99,11 @@ async function loadSessions() {
     } else {
       active.forEach(s => {
         const opt = document.createElement('option');
-        opt.value = s.id;
-        opt.textContent = `#${s.id} ${s.title}`;
+        opt.value = s.id; opt.textContent = `#${s.id} ${s.title}`;
         el.sessionSelect.appendChild(opt);
       });
     }
-  } catch (e) {
-    console.error('[POPUP] loadSessions failed:', e.message);
-  }
+  } catch {}
 }
 
 async function loadCurrentTab() {
@@ -104,105 +113,20 @@ async function loadCurrentTab() {
     el.tabTitle.textContent = tab.title || 'Untitled';
     el.tabUrl.textContent = tab.url || '';
     updateDebug({ tabId: tab.id });
-    console.log('[POPUP] current tab:', tab.id, tab.title);
   }
 }
 
-el.btnCreateSession.addEventListener('click', async () => {
-  if (!currentTab) return;
-  showError('');
-  el.btnCreateSession.disabled = true;
-  console.log('[POPUP] creating session from tab:', currentTab.title);
+function startCapturingUI(sessionId) {
+  capturing = true;
+  captureStartTime = Date.now();
+  timerInterval = setInterval(updateCaptureTime, 1000);
+  setStatus('capturing', 'Capturing');
+  el.btnStart.style.display = 'none';
+  el.btnStop.style.display = 'block';
+  startStatusPolling();
+}
 
-  try {
-    const res = await fetch(`${BACKEND_URL}/api/sessions/from-chrome-tab`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title: currentTab.title || 'Chrome Tab',
-        source_url: currentTab.url || '',
-        source_name: currentTab.title || '',
-        source_language: el.srcLang.value,
-        target_language: 'zh-TW',
-      }),
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      showError(err.detail || 'Failed to create session');
-      return;
-    }
-    const session = await res.json();
-    console.log('[POPUP] session created:', session.id);
-
-    await fetch(`${BACKEND_URL}/api/sessions/${session.id}/live/start`, { method: 'POST' });
-
-    selectedSessionId = session.id;
-    updateDebug({ sessionId: session.id });
-    await loadSessions();
-    el.sessionSelect.value = session.id;
-  } catch (e) {
-    showError('Backend error: ' + e.message);
-  } finally {
-    el.btnCreateSession.disabled = false;
-  }
-});
-
-el.btnStart.addEventListener('click', async () => {
-  const sessionId = el.sessionSelect.value;
-  if (!sessionId) {
-    showError('Please create or select a Chrome Live session first.');
-    return;
-  }
-  if (!currentTab) {
-    showError('No active tab found.');
-    return;
-  }
-
-  showError('');
-  console.log('[POPUP] Start clicked, sessionId=', sessionId, 'tabId=', currentTab.id);
-
-  selectedSessionId = parseInt(sessionId);
-  updateDebug({ sessionId: selectedSessionId, tabId: currentTab.id, error: '', chunksSent: 0, lastChunkSize: 0, lastChunkTime: '-' });
-
-  try {
-    const result = await chrome.runtime.sendMessage({
-      type: 'start_capture',
-      sessionId: selectedSessionId,
-      tabId: currentTab.id,
-      backendUrl: `ws://127.0.0.1:8787/ws/audio/${selectedSessionId}`,
-    });
-
-    if (!result || !result.ok) {
-      const err = result?.error || 'Unknown error from background';
-      showError(err);
-      setStatus('error', 'Error');
-      updateDebug({ error: err });
-      return;
-    }
-
-    capturing = true;
-    captureStartTime = Date.now();
-    timerInterval = setInterval(updateCaptureTime, 1000);
-    setStatus('capturing', 'Capturing');
-    el.btnStart.style.display = 'none';
-    el.btnStop.style.display = 'block';
-    startStatusPolling();
-  } catch (e) {
-    const msg = 'Extension error: ' + e.message;
-    showError(msg);
-    setStatus('error', 'Error');
-    updateDebug({ error: msg });
-  }
-});
-
-el.btnStop.addEventListener('click', async () => {
-  console.log('[POPUP] Stop clicked');
-  try {
-    await chrome.runtime.sendMessage({ type: 'stop_capture' });
-  } catch (e) {
-    console.warn('[POPUP] stop message failed:', e.message);
-  }
-
+function stopCapturingUI() {
   capturing = false;
   captureStartTime = null;
   clearInterval(timerInterval);
@@ -211,6 +135,76 @@ el.btnStop.addEventListener('click', async () => {
   el.btnStart.style.display = 'block';
   el.btnStop.style.display = 'none';
   stopStatusPolling();
+}
+
+el.btnCreateSession.addEventListener('click', async () => {
+  if (!currentTab) return;
+  showError(''); showOk('');
+  el.btnCreateSession.disabled = true;
+  try {
+    const r = await fetch(`${BACKEND_URL}/api/sessions/from-chrome-tab`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: currentTab.title || 'Chrome Tab',
+        source_url: currentTab.url || '',
+        source_name: currentTab.title || '',
+        source_language: el.srcLang.value,
+        target_language: 'zh-TW',
+      }),
+    });
+    if (!r.ok) { const e = await r.json(); showError(e.detail || 'Failed'); return; }
+    const session = await r.json();
+    await fetch(`${BACKEND_URL}/api/sessions/${session.id}/live/start`, { method: 'POST' });
+    selectedSessionId = session.id;
+    updateDebug({ sessionId: session.id });
+    await loadSessions();
+    el.sessionSelect.value = session.id;
+  } catch (e) { showError('Backend error: ' + e.message); }
+  finally { el.btnCreateSession.disabled = false; }
+});
+
+el.btnStart.addEventListener('click', async () => {
+  const sessionId = el.sessionSelect.value;
+  if (!sessionId) { showError('Create or select a Chrome Live session first.'); return; }
+  if (!currentTab) { showError('No active tab.'); return; }
+  showError(''); showOk('');
+  selectedSessionId = parseInt(sessionId);
+  updateDebug({ sessionId: selectedSessionId, tabId: currentTab.id, error: '', chunksSent: 0 });
+
+  const result = await chrome.runtime.sendMessage({
+    type: 'start_capture',
+    sessionId: selectedSessionId,
+    tabId: currentTab.id,
+    backendUrl: `ws://127.0.0.1:8787/ws/audio/${selectedSessionId}`,
+  });
+
+  if (!result || !result.ok) {
+    const err = result?.error || 'Unknown error';
+    showError(err + ' Try pressing Reset Capture.');
+    setStatus('error', 'Error');
+    updateDebug({ error: err });
+    return;
+  }
+
+  startCapturingUI(selectedSessionId);
+});
+
+el.btnStop.addEventListener('click', async () => {
+  try { await chrome.runtime.sendMessage({ type: 'stop_capture' }); } catch {}
+  stopCapturingUI();
+});
+
+el.btnReset.addEventListener('click', async () => {
+  showError(''); showOk('');
+  try {
+    await chrome.runtime.sendMessage({ type: 'reset_capture' });
+    stopCapturingUI();
+    updateDebug({ offscreenExists: false, captureStatus: 'idle', error: '', chunksSent: 0, lastChunkSize: 0, lastChunkTime: '-' });
+    showOk('Reset completed. You can now Start Capture again.');
+    setStatus('idle', 'Idle');
+  } catch (e) {
+    showError('Reset failed: ' + e.message);
+  }
 });
 
 let statusPollInterval = null;
@@ -219,78 +213,49 @@ function startStatusPolling() {
   stopStatusPolling();
   statusPollInterval = setInterval(async () => {
     try {
-      const offscreenStatus = await chrome.storage.local.get('offscreenStatus');
-      const s = offscreenStatus.offscreenStatus;
-      if (s) {
+      const state = await chrome.runtime.sendMessage({ type: 'get_state' });
+      if (state) {
         updateDebug({
-          chunksSent: s.chunksSent ?? 0,
-          lastChunkSize: s.lastChunkSize ?? 0,
-          lastChunkTime: s.lastChunkTime ?? '-',
-          sessionId: s.sessionId ?? selectedSessionId,
+          offscreenExists: state.offscreenExists,
+          captureStatus: state.captureStatus,
+          sessionId: state.sessionId,
+          error: state.lastError,
         });
-        if (s.state === 'error') {
-          setStatus('error', 'Error');
-          showError(s.detail || 'Unknown error');
-        } else if (s.state === 'capturing') {
-          setStatus('capturing', s.detail || 'Capturing');
+        if (state.offscreenStatus) {
+          const os = state.offscreenStatus;
+          updateDebug({ chunksSent: os.chunksSent ?? 0, lastChunkSize: os.lastChunkSize ?? 0, lastChunkTime: os.lastChunkTime ?? '-' });
+          if (os.state === 'error') { setStatus('error', 'Error'); showError(os.detail || 'Unknown error'); }
         }
-      }
-
-      if (selectedSessionId) {
-        try {
-          const res = await fetch(`${BACKEND_URL}/api/sessions/${selectedSessionId}/live/status`);
-          if (res.ok) {
-            const data = await res.json();
-            if (data.chunks_received > 0) {
-              updateDebug({
-                wsState: data.audio_ws_connected ? 1 : 3,
-              });
-            }
-          }
-        } catch {}
       }
     } catch {}
   }, 2000);
 }
 
 function stopStatusPolling() {
-  if (statusPollInterval) {
-    clearInterval(statusPollInterval);
-    statusPollInterval = null;
-  }
+  if (statusPollInterval) { clearInterval(statusPollInterval); statusPollInterval = null; }
 }
 
 (async () => {
-  console.log('[POPUP] init');
   await loadCurrentTab();
   const backendOk = await checkBackend();
-  if (backendOk) {
-    setStatus('connected', 'Connected');
-    await loadSessions();
-  } else {
-    setStatus('disconnected', 'Backend Offline');
-    showError('Cannot reach backend at ' + BACKEND_URL);
-  }
+  if (backendOk) { setStatus('connected', 'Connected'); await loadSessions(); }
+  else { setStatus('error', 'Backend Offline'); showError('Cannot reach backend at ' + BACKEND_URL); }
 
   try {
     const state = await chrome.runtime.sendMessage({ type: 'get_state' });
-    console.log('[POPUP] current state:', state);
-    if (state && state.capturing) {
-      capturing = true;
-      captureStartTime = state.startTime || Date.now();
-      timerInterval = setInterval(updateCaptureTime, 1000);
-      setStatus('capturing', 'Capturing');
-      el.btnStart.style.display = 'none';
-      el.btnStop.style.display = 'block';
-      startStatusPolling();
-    }
-  } catch {}
-
-  try {
-    const stored = await chrome.storage.local.get('captureState');
-    if (stored.captureState?.capturing) {
-      selectedSessionId = stored.captureState.sessionId;
-      updateDebug({ sessionId: selectedSessionId, tabId: stored.captureState.tabId });
+    if (state) {
+      updateDebug({
+        offscreenExists: state.offscreenExists,
+        captureStatus: state.captureStatus,
+        sessionId: state.sessionId,
+        tabId: state.tabId,
+        error: state.lastError,
+      });
+      if (state.capturing) {
+        selectedSessionId = state.sessionId;
+        captureStartTime = state.startTime || Date.now();
+        startCapturingUI(selectedSessionId);
+      }
     }
   } catch {}
 })();

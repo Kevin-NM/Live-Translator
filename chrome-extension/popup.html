@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 380px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      padding: 16px;
+    }
+    h1 { font-size: 16px; color: #60a5fa; margin-bottom: 12px; }
+    .status-bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px; border-radius: 8px; background: #16213e;
+      margin-bottom: 12px; font-size: 13px;
+    }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .status-dot.disconnected { background: #ef4444; }
+    .status-dot.connected { background: #22c55e; }
+    .status-dot.capturing { background: #22c55e; animation: pulse 1s infinite; }
+    .status-dot.error { background: #ef4444; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .tab-info {
+      background: #16213e; border-radius: 8px; padding: 10px 12px;
+      margin-bottom: 12px; font-size: 12px;
+    }
+    .tab-info .label { color: #94a3b8; font-size: 11px; }
+    .tab-info .value { color: #e0e0e0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 340px; }
+    .tab-info .url { color: #64748b; font-size: 11px; }
+    .lang-row { display: flex; gap: 8px; margin-bottom: 12px; }
+    .lang-row label { font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px; }
+    .lang-row select { flex: 1; background: #0f3460; border: 1px solid #334155; color: #e0e0e0; padding: 6px 8px; border-radius: 6px; font-size: 12px; }
+    .btn { width: 100%; padding: 10px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
+    .btn-start { background: #22c55e; color: #fff; }
+    .btn-start:hover { background: #16a34a; }
+    .btn-start:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-stop { background: #ef4444; color: #fff; }
+    .btn-stop:hover { background: #dc2626; }
+    .btn-session { background: #3b82f6; color: #fff; margin-bottom: 8px; }
+    .btn-session:hover { background: #2563eb; }
+    .btn-session:disabled { opacity: 0.5; cursor: not-allowed; }
+    .error-box {
+      background: #450a0a; border: 1px solid #7f1d1d; color: #fca5a5;
+      padding: 8px 12px; border-radius: 8px; font-size: 12px;
+      margin-bottom: 12px; display: none; word-break: break-all;
+    }
+    .debug-panel {
+      background: #0f172a; border: 1px solid #1e293b; border-radius: 8px;
+      padding: 10px 12px; margin-top: 12px; font-size: 11px; font-family: monospace;
+    }
+    .debug-panel .row { display: flex; justify-content: space-between; padding: 2px 0; }
+    .debug-panel .label { color: #64748b; }
+    .debug-panel .value { color: #94a3b8; }
+    .info-row { display: flex; justify-content: space-between; font-size: 11px; color: #64748b; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>&#127908; Live Translator</h1>
+
+  <div class="status-bar">
+    <div class="status-dot disconnected" id="statusDot"></div>
+    <span id="statusText">Disconnected</span>
+  </div>
+
+  <div class="error-box" id="errorBox"></div>
+
+  <div class="tab-info">
+    <div class="label">Current Tab</div>
+    <div class="value" id="tabTitle">Loading...</div>
+    <div class="url" id="tabUrl"></div>
+  </div>
+
+  <div class="lang-row">
+    <div>
+      <label>Source Language</label>
+      <select id="srcLang">
+        <option value="ja">Japanese</option>
+        <option value="en">English</option>
+      </select>
+    </div>
+    <div>
+      <label>Session</label>
+      <select id="sessionSelect">
+        <option value="">Loading...</option>
+      </select>
+    </div>
+  </div>
+
+  <button class="btn btn-session" id="btnCreateSession">Create Session from Tab</button>
+  <button class="btn btn-start" id="btnStart">Start Capture</button>
+  <button class="btn btn-stop" id="btnStop" style="display:none">Stop Capture</button>
+
+  <div class="info-row">
+    <span>Backend: <span id="backendStatus">checking...</span></span>
+    <span id="captureTime"></span>
+  </div>
+
+  <div class="debug-panel">
+    <div style="margin-bottom:6px;color:#475569;font-weight:600;">Debug Info</div>
+    <div class="row"><span class="label">Session ID</span><span class="value" id="dbgSessionId">-</span></div>
+    <div class="row"><span class="label">Tab ID</span><span class="value" id="dbgTabId">-</span></div>
+    <div class="row"><span class="label">WebSocket</span><span class="value" id="dbgWsState">-</span></div>
+    <div class="row"><span class="label">Chunks Sent</span><span class="value" id="dbgChunks">0</span></div>
+    <div class="row"><span class="label">Last Chunk Size</span><span class="value" id="dbgLastSize">0</span></div>
+    <div class="row"><span class="label">Last Chunk Time</span><span class="value" id="dbgLastTime">-</span></div>
+    <div class="row"><span class="label">Last Error</span><span class="value" id="dbgError" style="color:#f87171;">-</span></div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

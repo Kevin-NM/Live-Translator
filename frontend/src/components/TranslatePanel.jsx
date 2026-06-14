@@ -20,11 +20,18 @@ export default function TranslatePanel({ onTranslate }) {
     setLoading(true)
     setResult(null)
     try {
-      const res = await onTranslate(sourceText, sourceLanguage, mode)
+      const res = await onTranslate(sourceText.trim(), sourceLanguage, mode)
       setResult(res)
       setSourceText('')
     } catch (e) {
-      setError('Translation failed. Check the error details above.')
+      const detail = e.response?.data?.detail
+      if (typeof detail === 'string') {
+        setError(detail)
+      } else if (e.response?.status === 502) {
+        setError('Translation API error: ' + (detail || 'Unknown'))
+      } else {
+        setError('Translation failed. Check provider settings.')
+      }
     } finally {
       setLoading(false)
     }

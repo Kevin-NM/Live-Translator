@@ -29,8 +29,13 @@ export default function SessionDetail() {
   const handleTranslate = async (sourceText, sourceLanguage, m) => {
     setError('')
     try {
-      await translateInSession(id, { source_text: sourceText, source_language: sourceLanguage, mode: m })
+      const res = await translateInSession(id, { source_text: sourceText, source_language: sourceLanguage, mode: m })
+      const data = res.data
+      if (data.status === 'error') {
+        setError(data.error_message || 'Translation failed')
+      }
       loadSegments()
+      return data
     } catch (e) {
       const detail = e.response?.data?.detail
       setError(typeof detail === 'string' ? detail : 'Translation failed')

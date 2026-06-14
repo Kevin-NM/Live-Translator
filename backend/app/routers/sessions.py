@@ -1,3 +1,5 @@
+import logging
+import re
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse, Response
@@ -7,6 +9,7 @@ from app.database import get_db
 from app import crud, schemas, translator
 from app.services.export_service import export_session_json, export_session_csv
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
@@ -54,36 +57,49 @@ async def translate_in_session(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     if session.status == "stopped":
-        raise HTTPException(status_code=400, detail="Session is stopped")
+        raise HTTPException(status_code=400, detail="session_stopped")
 
-    providers = crud.get_providers(db)
-    if not providers:
-        raise HTTPException(status_code=400, detail="No providers configured")
+    if not data.source_text or not data.source_text.strip():
+        raise HTTPException(status_code=400, detail="source_text_empty")
 
-    enabled_providers = [p for p in providers if p.enabled]
-    if not enabled_providers:
-        raise HTTPException(status_code=400, detail="No enabled providers")
+    provider = None
 
-    provider = enabled_providers[0]
-    if session.translation_provider:
-        matched = [p for p in enabled_providers if p.provider_name == session.translation_provider]
+    if session.provider_id:
+        provider = crud.get_provider(db, session.provider_id)
+
+    if not provider and session.translation_provider:
+        providers = crud.get_providers(db)
+        matched = [p for p in providers if p.enabled and p.provider_name == session.translation_provider]
         if matched:
             provider = matched[0]
+
+    if not provider:
+        providers = crud.get_providers(db)
+        enabled = [p for p in providers if p.enabled]
+        if enabled:
+            provider = enabled[0]
+
+    if not provider:
+        raise HTTPException(status_code=400, detail="provider_not_configured")
+
+    if not provider.enabled:
+        raise HTTPException(status_code=400, detail="provider_disabled")
 
     segment_index = crud.get_next_segment_index(db, session_id)
     source_lang = data.source_language
     if source_lang == "auto":
-        import re
         if re.search(r'[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]', data.source_text):
             source_lang = "ja"
         else:
             source_lang = "en"
 
-    segment = crud.create_segment(db, session_id, segment_index, source_lang, data.source_text)
+    segment = crud.create_segment(
+        db, session_id, segment_index, source_lang, data.source_text.strip()
+    )
 
     result = await translator.translate_text(
         provider=provider,
-        source_text=data.source_text,
+        source_text=data.source_text.strip(),
         source_language=source_lang,
         mode=data.mode,
     )
@@ -94,21 +110,18 @@ async def translate_in_session(
         provider_name=result.provider_name,
         model=result.model,
         latency_ms=result.latency_ms,
-        status=result.status,
+        status="translated" if result.status == "completed" else "error",
         error_message=result.error_message,
     )
 
-    if result.status == "error":
-        raise HTTPException(status_code=502, detail=result.error_message)
-
     return schemas.TranslateResponse(
         segment_id=segment.id,
-        source_text=data.source_text,
+        source_text=data.source_text.strip(),
         translated_text=result.translated_text,
         model=result.model,
         provider=result.provider_name,
         latency_ms=round(result.latency_ms, 2),
-        status=result.status,
+        status="translated" if result.status == "completed" else "error",
         error_message=result.error_message,
     )
 

@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { getHealth, getProviders, getSessions } from '../api'
+import { useI18n } from '../i18n'
 
 export default function Dashboard() {
+  const { t } = useI18n()
   const [health, setHealth] = useState(null)
   const [providerCount, setProviderCount] = useState(0)
   const [sessions, setSessions] = useState([])
@@ -15,32 +17,32 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Dashboard</h1>
+      <h1 className="text-2xl font-bold">{t('dashboard.title')}</h1>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="bg-gray-800 rounded-xl p-5 border border-gray-700">
-          <div className="text-sm text-gray-400 mb-1">API Health</div>
+          <div className="text-sm text-gray-400 mb-1">{t('dashboard.api_health')}</div>
           <div className={`text-2xl font-bold ${health?.status === 'ok' ? 'text-green-400' : 'text-red-400'}`}>
-            {health?.status === 'ok' ? 'Healthy' : 'Error'}
+            {health?.status === 'ok' ? t('dashboard.healthy') : t('dashboard.error')}
           </div>
           <div className="text-xs text-gray-500 mt-1">v{health?.version} · {health?.database}</div>
         </div>
         <div className="bg-gray-800 rounded-xl p-5 border border-gray-700">
-          <div className="text-sm text-gray-400 mb-1">Providers</div>
+          <div className="text-sm text-gray-400 mb-1">{t('dashboard.providers')}</div>
           <div className="text-2xl font-bold text-blue-400">{providerCount}</div>
-          <Link to="/providers" className="text-xs text-blue-500 hover:underline">Manage →</Link>
+          <Link to="/providers" className="text-xs text-blue-500 hover:underline">{t('dashboard.manage')}</Link>
         </div>
         <div className="bg-gray-800 rounded-xl p-5 border border-gray-700">
-          <div className="text-sm text-gray-400 mb-1">Sessions</div>
+          <div className="text-sm text-gray-400 mb-1">{t('dashboard.sessions')}</div>
           <div className="text-2xl font-bold text-purple-400">{sessions.length}</div>
-          <Link to="/sessions" className="text-xs text-purple-500 hover:underline">View all →</Link>
+          <Link to="/sessions" className="text-xs text-purple-500 hover:underline">{t('dashboard.view_all')}</Link>
         </div>
       </div>
 
       <div className="bg-gray-800 rounded-xl p-5 border border-gray-700">
-        <h2 className="text-lg font-semibold mb-3">Recent Sessions</h2>
+        <h2 className="text-lg font-semibold mb-3">{t('dashboard.recent_sessions')}</h2>
         {sessions.length === 0 ? (
-          <p className="text-gray-500 text-sm">No sessions yet. <Link to="/sessions" className="text-blue-500 hover:underline">Create one →</Link></p>
+          <p className="text-gray-500 text-sm">{t('dashboard.no_sessions')} <Link to="/sessions" className="text-blue-500 hover:underline">{t('dashboard.create_one')}</Link></p>
         ) : (
           <div className="space-y-2">
             {sessions.slice(0, 5).map(s => (

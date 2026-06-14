@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { injectLiveText } from '../api'
+import { useI18n } from '../i18n'
 
 export default function LivePanel({ sessionId, sessionStatus }) {
+  const { t } = useI18n()
   const [liveSegments, setLiveSegments] = useState([])
   const [wsStatus, setWsStatus] = useState('disconnected')
   const [backendStats, setBackendStats] = useState(null)
@@ -133,64 +135,63 @@ export default function LivePanel({ sessionId, sessionStatus }) {
   return (
     <div className="bg-gray-800 rounded-xl p-5 border border-gray-700 space-y-4">
       <div className="flex justify-between items-center">
-        <h2 className="text-lg font-semibold">Chrome Live Mode</h2>
+        <h2 className="text-lg font-semibold">{t('live.title')}</h2>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 text-xs">
             <div className={`w-2 h-2 rounded-full ${
               wsStatus === 'connected' ? 'bg-green-400' :
               wsStatus === 'error' ? 'bg-red-400' : 'bg-gray-500'
             }`} />
-            <span className="text-gray-400">WS: {wsStatus}</span>
+            <span className="text-gray-400">{t('live.ws')}: {wsStatus}</span>
           </div>
           <div className="flex items-center gap-2 text-xs">
             <div className={`w-2 h-2 rounded-full ${extConnected ? 'bg-green-400' : 'bg-gray-500'}`} />
-            <span className="text-gray-400">Ext: {extConnected ? 'connected' : 'disconnected'}</span>
+            <span className="text-gray-400">{t('live.ext')}: {extConnected ? t('live.connected') : t('live.disconnected')}</span>
           </div>
           {liveSegments.length > 0 && (
-            <button onClick={clearSegments} className="text-xs text-gray-500 hover:text-gray-300">Clear</button>
+            <button onClick={clearSegments} className="text-xs text-gray-500 hover:text-gray-300">{t('live.clear')}</button>
           )}
         </div>
       </div>
 
       <div className="bg-gray-750 rounded-lg p-3 border border-gray-600 text-xs font-mono space-y-1">
-        <div className="text-gray-500 font-semibold mb-1">Backend Audio Status</div>
+        <div className="text-gray-500 font-semibold mb-1">{t('live.backend_status')}</div>
         <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-          <span className="text-gray-500">Audio WS</span>
-          <span className={extConnected ? 'text-green-400' : 'text-gray-400'}>{extConnected ? 'connected' : 'disconnected'}</span>
-          <span className="text-gray-500">Format</span>
+          <span className="text-gray-500">{t('live.audio_ws')}</span>
+          <span className={extConnected ? 'text-green-400' : 'text-gray-400'}>{extConnected ? t('live.connected') : t('live.disconnected')}</span>
+          <span className="text-gray-500">{t('live.format')}</span>
           <span className="text-gray-300">{backendStats?.last_format || '-'}</span>
-          <span className="text-gray-500">Sample Rate</span>
+          <span className="text-gray-500">{t('live.sample_rate')}</span>
           <span className="text-gray-300">{backendStats?.last_sample_rate ? backendStats.last_sample_rate + ' Hz' : '-'}</span>
-          <span className="text-gray-500">Channels</span>
+          <span className="text-gray-500">{t('live.channels')}</span>
           <span className="text-gray-300">{backendStats?.last_channels || '-'}</span>
-          <span className="text-gray-500">Chunks Received</span>
+          <span className="text-gray-500">{t('live.chunks_received')}</span>
           <span className="text-gray-300">{chunksReceived}</span>
-          <span className="text-gray-500">Last Chunk Size</span>
+          <span className="text-gray-500">{t('live.last_chunk_size')}</span>
           <span className="text-gray-300">{lastChunkBytes > 0 ? lastChunkBytes + ' bytes' : '-'}</span>
-          <span className="text-gray-500">PCM Buffered</span>
+          <span className="text-gray-500">{t('live.pcm_buffered')}</span>
           <span className="text-gray-300">{backendStats?.pcm_duration_buffered ? backendStats.pcm_duration_buffered + 's' : '-'}</span>
-          <span className="text-gray-500">Last Chunk At</span>
+          <span className="text-gray-500">{t('live.last_chunk_at')}</span>
           <span className="text-gray-300">{lastChunkAt ? new Date(lastChunkAt * 1000).toLocaleTimeString() : '-'}</span>
-          <span className="text-gray-500">Decode Status</span>
+          <span className="text-gray-500">{t('live.decode_status')}</span>
           <span className={
             decodeStatus === 'ok' ? 'text-green-400' :
             decodeStatus === 'error' ? 'text-red-400' :
             decodeStatus === 'buffering' ? 'text-yellow-400' : 'text-gray-400'
           }>{decodeStatus}</span>
           {lastError && <>
-            <span className="text-gray-500">Last Error</span>
+            <span className="text-gray-500">{t('live.last_error')}</span>
             <span className="text-red-400 truncate">{lastError}</span>
           </>}
         </div>
       </div>
 
       <div className="bg-blue-900/30 border border-blue-800 rounded-lg p-3 text-sm text-blue-200">
-        <strong>Instructions:</strong> Open the Chrome Extension popup, select this session, choose the Chrome tab, and click "Start Capture".
-        Live subtitles will appear below. Or use the inject box below to test the pipeline without Chrome audio.
+        <strong>{t('live.instructions')}</strong> {t('live.instructions_text')}
       </div>
 
       <div className="bg-gray-750 rounded-lg p-3 border border-gray-600 space-y-2">
-        <div className="text-xs text-gray-500 font-semibold">Inject Text (Pipeline Test)</div>
+        <div className="text-xs text-gray-500 font-semibold">{t('live.inject_title')}</div>
         <div className="flex gap-2">
           <select value={injectLang} onChange={e => setInjectLang(e.target.value)}
             className="bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs focus:outline-none focus:border-blue-500">
@@ -200,10 +201,10 @@ export default function LivePanel({ sessionId, sessionStatus }) {
           <input type="text" value={injectText} onChange={e => setInjectText(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') handleInject() }}
             className="flex-1 bg-gray-700 border border-gray-600 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
-            placeholder="Type text to inject into live pipeline..." />
+            placeholder={t('live.inject_placeholder')} />
           <button onClick={handleInject} disabled={injecting || !injectText.trim()}
             className="bg-yellow-600 hover:bg-yellow-700 text-white px-3 py-1.5 rounded text-xs font-medium disabled:opacity-50">
-            {injecting ? '...' : 'Inject'}
+            {injecting ? '...' : t('live.inject_btn')}
           </button>
         </div>
       </div>
@@ -235,7 +236,7 @@ export default function LivePanel({ sessionId, sessionStatus }) {
               </div>
               <div className="text-gray-300">{seg.source_text}</div>
               <div className="text-white font-medium mt-1">
-                {seg.translated_text || <span className="text-gray-500 italic">翻譯中……</span>}
+                {seg.translated_text || <span className="text-gray-500 italic">{t('live.translating')}</span>}
               </div>
             </div>
           ))}
@@ -245,8 +246,8 @@ export default function LivePanel({ sessionId, sessionStatus }) {
       {liveSegments.length === 0 && (
         <div className="text-center text-gray-500 py-6 text-sm">
           {extConnected
-            ? 'Extension connected. Waiting for ASR results...'
-            : 'Waiting for Chrome Extension to connect...'}
+            ? t('live.waiting_asr')
+            : t('live.waiting_ext')}
         </div>
       )}
     </div>

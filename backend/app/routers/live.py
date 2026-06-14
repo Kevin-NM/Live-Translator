@@ -24,6 +24,39 @@ async def audio_status():
     )
 
 
+@router.post("/api/translation/test", response_model=schemas.TranslationTestResponse)
+async def translation_test(data: schemas.TranslationTestRequest, db: DbSession = Depends(get_db)):
+    from app import translator as translator_mod
+
+    provider = crud.get_provider(db, data.provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    if not provider.enabled:
+        raise HTTPException(status_code=400, detail="Provider is disabled")
+
+    source_text = data.source_text or "いや、これはさすがに無理でしょ。今のタイミングで突っ込むのは危なすぎるって。"
+    source_language = data.source_language or "ja"
+
+    result = await translator_mod.translate_text(
+        provider=provider,
+        source_text=source_text,
+        source_language=source_language,
+        mode="realtime",
+    )
+
+    return schemas.TranslationTestResponse(
+        status=result.status,
+        latency_ms=round(result.latency_ms, 2),
+        model=result.model,
+        provider_name=result.provider_name,
+        source_text=source_text,
+        translated_text=result.translated_text,
+        error_message=result.error_message,
+        http_status=result.http_status,
+        raw_response_preview=result.raw_response_preview,
+    )
+
+
 @router.post("/api/sessions/from-chrome-tab", response_model=schemas.SessionRead, status_code=201)
 async def create_chrome_tab_session(data: schemas.ChromeTabSessionCreate, db: DbSession = Depends(get_db)):
     provider_name = None

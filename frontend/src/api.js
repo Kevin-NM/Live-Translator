@@ -11,6 +11,7 @@ export const createProvider = (data) => api.post('/providers', data)
 export const updateProvider = (id, data) => api.patch(`/providers/${id}`, data)
 export const deleteProvider = (id) => api.delete(`/providers/${id}`)
 export const testProvider = (id) => api.post(`/providers/${id}/test`)
+export const translationTest = (data) => api.post('/translation/test', data)
 
 export const getSessions = () => api.get('/sessions')
 export const getSession = (id) => api.get(`/sessions/${id}`)

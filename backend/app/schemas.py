@@ -53,6 +53,24 @@ class ProviderTestResponse(BaseModel):
     error_message: Optional[str] = None
 
 
+class TranslationTestRequest(BaseModel):
+    provider_id: int
+    source_text: Optional[str] = None
+    source_language: Optional[str] = "ja"
+
+
+class TranslationTestResponse(BaseModel):
+    status: str
+    latency_ms: float
+    model: str
+    provider_name: str
+    source_text: str
+    translated_text: str
+    error_message: Optional[str] = None
+    http_status: Optional[int] = None
+    raw_response_preview: Optional[str] = None
+
+
 class SessionCreate(BaseModel):
     title: str = Field(..., min_length=1)
     source_language: str = Field(default="auto")

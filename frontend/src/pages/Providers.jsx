@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { getProviders, createProvider, updateProvider, deleteProvider, testProvider } from '../api'
+import { getProviders, createProvider, updateProvider, deleteProvider, testProvider, translationTest } from '../api'
 import ProviderForm from '../components/ProviderForm'
 
 const EMPTY_PROVIDER = {
@@ -13,7 +13,9 @@ export default function Providers() {
   const [editing, setEditing] = useState(null)
   const [showForm, setShowForm] = useState(false)
   const [testResults, setTestResults] = useState({})
+  const [selfTestResults, setSelfTestResults] = useState({})
   const [testing, setTesting] = useState({})
+  const [selfTesting, setSelfTesting] = useState({})
   const [errors, setErrors] = useState({})
 
   const load = () => getProviders().then(r => setProviders(r.data)).catch(() => {})
@@ -54,6 +56,21 @@ export default function Providers() {
       setErrors(e2 => ({ ...e2, [id]: typeof detail === 'string' ? detail : JSON.stringify(detail) }))
     } finally {
       setTesting(t => ({ ...t, [id]: false }))
+    }
+  }
+
+  const handleSelfTest = async (id) => {
+    setSelfTesting(t => ({ ...t, [id]: true }))
+    setSelfTestResults(r => ({ ...r, [id]: null }))
+    setErrors(e => ({ ...e, [`${id}_self`]: null }))
+    try {
+      const res = await translationTest({ provider_id: id, source_language: 'ja' })
+      setSelfTestResults(r => ({ ...r, [id]: res.data }))
+    } catch (e) {
+      const detail = e.response?.data?.detail
+      setErrors(e2 => ({ ...e2, [`${id}_self`]: typeof detail === 'string' ? detail : JSON.stringify(detail) }))
+    } finally {
+      setSelfTesting(t => ({ ...t, [id]: false }))
     }
   }
 
@@ -103,6 +120,10 @@ export default function Providers() {
                   className="text-sm text-green-400 hover:text-green-300 px-3 py-1 rounded border border-gray-600 hover:border-green-500 disabled:opacity-50">
                   {testing[p.id] ? 'Testing...' : 'Test'}
                 </button>
+                <button onClick={() => handleSelfTest(p.id)} disabled={selfTesting[p.id]}
+                  className="text-sm text-yellow-400 hover:text-yellow-300 px-3 py-1 rounded border border-gray-600 hover:border-yellow-500 disabled:opacity-50">
+                  {selfTesting[p.id] ? 'Self-Testing...' : 'Self-Test'}
+                </button>
                 <button onClick={() => handleDelete(p.id)}
                   className="text-sm text-red-400 hover:text-red-300 px-3 py-1 rounded border border-gray-600 hover:border-red-500">
                   Delete
@@ -112,6 +133,9 @@ export default function Providers() {
 
             {errors[p.id] && (
               <div className="mt-3 bg-red-900/50 border border-red-700 text-red-200 px-4 py-2 rounded-lg text-sm">{errors[p.id]}</div>
+            )}
+            {errors[`${p.id}_self`] && (
+              <div className="mt-3 bg-red-900/50 border border-red-700 text-red-200 px-4 py-2 rounded-lg text-sm">{errors[`${p.id}_self`]}</div>
             )}
 
             {testResults[p.id] && (
@@ -128,6 +152,42 @@ export default function Providers() {
                 ))}
               </div>
             )}
+
+            {selfTestResults[p.id] && (() => {
+              const r = selfTestResults[p.id]
+              return (
+                <div className={`mt-3 rounded-lg p-4 text-sm border ${r.status === 'completed' ? 'bg-green-900/30 border-green-700' : 'bg-red-900/30 border-red-700'}`}>
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="font-medium">
+                      {r.status === 'completed' ? 'PASS' : 'FAIL'} · {r.provider_name} · {r.model}
+                    </span>
+                    <span className="text-gray-400">{r.latency_ms}ms</span>
+                  </div>
+                  <div className="mb-1">
+                    <span className="text-xs text-gray-500">Source ({r.source_text === '...' ? 'ja' : 'ja'}): </span>
+                    <span className="text-gray-400">{r.source_text}</span>
+                  </div>
+                  {r.translated_text && (
+                    <div className="mb-1">
+                      <span className="text-xs text-gray-500">Output: </span>
+                      <span className="text-white font-medium">{r.translated_text}</span>
+                    </div>
+                  )}
+                  {r.http_status && (
+                    <div className="text-xs text-gray-500">HTTP: {r.http_status}</div>
+                  )}
+                  {r.error_message && (
+                    <div className="text-red-300 mt-1">{r.error_message}</div>
+                  )}
+                  {r.raw_response_preview && r.status !== 'completed' && (
+                    <details className="mt-2">
+                      <summary className="text-xs text-gray-500 cursor-pointer">Raw response preview</summary>
+                      <pre className="text-xs text-gray-400 mt-1 bg-gray-900 p-2 rounded overflow-x-auto max-h-32">{r.raw_response_preview}</pre>
+                    </details>
+                  )}
+                </div>
+              )
+            })()}
           </div>
         ))}
 

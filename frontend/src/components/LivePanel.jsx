@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { injectLiveText } from '../api'
 import { useI18n } from '../i18n'
 
@@ -10,40 +10,21 @@ export default function LivePanel({ sessionId, sessionStatus }) {
   const [injectText, setInjectText] = useState('')
   const [injectLang, setInjectLang] = useState('ja')
   const [injecting, setInjecting] = useState(false)
+
   const wsRef = useRef(null)
   const segmentsRef = useRef([])
+  const statusIntervalRef = useRef(null)
+  const reconnectTimerRef = useRef(null)
+  const mountedRef = useRef(false)
+  const reconnectAttemptRef = useRef(0)
 
-  const connectWs = useCallback(() => {
-    if (wsRef.current && wsRef.current.readyState <= 1) return
-
-    const wsUrl = `ws://${window.location.hostname}:8787/ws/live/${sessionId}`
-    console.log('[LivePanel] connecting WebSocket:', wsUrl)
-    const ws = new WebSocket(wsUrl)
-
-    ws.onopen = () => {
-      console.log('[LivePanel] WebSocket connected')
-      setWsStatus('connected')
-    }
-    ws.onclose = (e) => {
-      console.log('[LivePanel] WebSocket closed:', e.code, e.reason)
-      setWsStatus('disconnected')
-      wsRef.current = null
-    }
-    ws.onerror = (e) => {
-      console.error('[LivePanel] WebSocket error')
-      setWsStatus('error')
-    }
-    ws.onmessage = (e) => {
-      try {
-        const msg = JSON.parse(e.data)
-        handleWsMessage(msg)
-      } catch {}
-    }
-
-    wsRef.current = ws
-  }, [sessionId])
+  const clearSegments = () => {
+    segmentsRef.current = []
+    setLiveSegments([])
+  }
 
   const handleWsMessage = (msg) => {
+    if (!mountedRef.current) return
     if (msg.type === 'final') {
       const seg = {
         id: msg.segment_id,
@@ -80,37 +61,101 @@ export default function LivePanel({ sessionId, sessionStatus }) {
     }
   }
 
-  useEffect(() => {
-    if (sessionStatus === 'active') {
-      connectWs()
+  const connectWs = () => {
+    if (wsRef.current && wsRef.current.readyState <= 1) return
+
+    const wsUrl = `ws://${window.location.hostname}:8787/ws/live/${sessionId}`
+    console.log('[LivePanel] connecting WebSocket:', wsUrl)
+    const ws = new WebSocket(wsUrl)
+
+    ws.onopen = () => {
+      if (!mountedRef.current) { ws.close(); return; }
+      console.log('[LivePanel] WebSocket connected')
+      setWsStatus('connected')
+      reconnectAttemptRef.current = 0
     }
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close()
+    ws.onclose = (e) => {
+      console.log('[LivePanel] WebSocket closed:', e.code)
+      if (mountedRef.current) {
+        setWsStatus('disconnected')
         wsRef.current = null
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 10000)
+        reconnectAttemptRef.current++
+        reconnectTimerRef.current = setTimeout(() => {
+          if (mountedRef.current && sessionStatus === 'active') connectWs()
+        }, delay)
       }
     }
-  }, [sessionId, sessionStatus, connectWs])
+    ws.onerror = () => {
+      console.error('[LivePanel] WebSocket error')
+      if (mountedRef.current) setWsStatus('error')
+    }
+    ws.onmessage = (e) => {
+      try { handleWsMessage(JSON.parse(e.data)) } catch {}
+    }
 
-  useEffect(() => {
-    const pollStatus = async () => {
+    wsRef.current = ws
+  }
+
+  const startStatusPolling = () => {
+    stopStatusPolling()
+    const poll = async () => {
+      if (!mountedRef.current) return
       try {
         const res = await fetch(`/api/sessions/${sessionId}/live/status`)
-        if (res.ok) {
+        if (res.ok && mountedRef.current) {
           const data = await res.json()
           setBackendStats(data)
         }
       } catch {}
     }
-    pollStatus()
-    const interval = setInterval(pollStatus, 2000)
-    return () => clearInterval(interval)
-  }, [sessionId])
-
-  const clearSegments = () => {
-    segmentsRef.current = []
-    setLiveSegments([])
+    poll()
+    const intervalMs = document.hidden ? 10000 : 2000
+    statusIntervalRef.current = setInterval(() => {
+      const ms = document.hidden ? 10000 : 2000
+      if (statusIntervalRef.current) clearInterval(statusIntervalRef.current)
+      statusIntervalRef.current = setInterval(poll, ms)
+    }, intervalMs)
   }
+
+  const stopStatusPolling = () => {
+    if (statusIntervalRef.current) {
+      clearInterval(statusIntervalRef.current)
+      statusIntervalRef.current = null
+    }
+  }
+
+  const cleanup = () => {
+    mountedRef.current = false
+
+    if (wsRef.current) {
+      wsRef.current.onopen = null
+      wsRef.current.onmessage = null
+      wsRef.current.onerror = null
+      wsRef.current.onclose = null
+      try { wsRef.current.close() } catch {}
+      wsRef.current = null
+    }
+
+    stopStatusPolling()
+
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
+  }
+
+  useEffect(() => {
+    mountedRef.current = true
+    reconnectAttemptRef.current = 0
+
+    if (sessionStatus === 'active') {
+      connectWs()
+    }
+    startStatusPolling()
+
+    return cleanup
+  }, [sessionId, sessionStatus])
 
   const handleInject = async () => {
     if (!injectText.trim()) return
@@ -245,9 +290,7 @@ export default function LivePanel({ sessionId, sessionStatus }) {
 
       {liveSegments.length === 0 && (
         <div className="text-center text-gray-500 py-6 text-sm">
-          {extConnected
-            ? t('live.waiting_asr')
-            : t('live.waiting_ext')}
+          {extConnected ? t('live.waiting_asr') : t('live.waiting_ext')}
         </div>
       )}
     </div>

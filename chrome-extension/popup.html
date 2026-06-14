@@ -69,6 +69,14 @@
       </select>
     </div>
     <div>
+      <label>Playback Mode</label>
+      <select id="playbackMode">
+        <option value="audioElement">audioElement</option>
+        <option value="audioContext">audioContext</option>
+        <option value="none">none</option>
+      </select>
+    </div>
+    <div>
       <label>Session</label>
       <select id="sessionSelect">
         <option value="">Loading...</option>
@@ -92,6 +100,7 @@
     <div class="row"><span class="label">Tab ID</span><span class="value" id="dbgTabId">-</span></div>
     <div class="row"><span class="label">Offscreen Exists</span><span class="value" id="dbgOffExists">-</span></div>
     <div class="row"><span class="label">Capture Status</span><span class="value" id="dbgCaptureStatus">-</span></div>
+    <div class="row"><span class="label">Playback Mode</span><span class="value" id="dbgPlaybackMode">-</span></div>
     <div class="row"><span class="label">Audio Playback</span><span class="value" id="dbgAudioRouted">-</span></div>
     <div class="row"><span class="label">AudioContext</span><span class="value" id="dbgAudioCtx">-</span></div>
     <div class="row"><span class="label">Playback State</span><span class="value" id="dbgPlaybackState">-</span></div>

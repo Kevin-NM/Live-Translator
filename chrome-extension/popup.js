@@ -8,6 +8,7 @@ const el = {
   tabTitle: document.getElementById('tabTitle'),
   tabUrl: document.getElementById('tabUrl'),
   srcLang: document.getElementById('srcLang'),
+  playbackMode: document.getElementById('playbackMode'),
   sessionSelect: document.getElementById('sessionSelect'),
   btnCreateSession: document.getElementById('btnCreateSession'),
   btnStart: document.getElementById('btnStart'),
@@ -19,6 +20,7 @@ const el = {
   dbgTabId: document.getElementById('dbgTabId'),
   dbgOffExists: document.getElementById('dbgOffExists'),
   dbgCaptureStatus: document.getElementById('dbgCaptureStatus'),
+  dbgPlaybackMode: document.getElementById('dbgPlaybackMode'),
   dbgAudioRouted: document.getElementById('dbgAudioRouted'),
   dbgAudioCtx: document.getElementById('dbgAudioCtx'),
   dbgPlaybackState: document.getElementById('dbgPlaybackState'),
@@ -61,6 +63,9 @@ function updateDebug(info) {
   if (info.captureStatus != null) {
     el.dbgCaptureStatus.textContent = info.captureStatus;
     el.dbgCaptureStatus.className = 'value ' + (info.captureStatus === 'capturing' ? 'ok' : info.captureStatus === 'error' ? 'err' : '');
+  }
+  if (info.playbackMode != null) {
+    el.dbgPlaybackMode.textContent = info.playbackMode;
   }
   if (info.audioPlaybackRouted != null) {
     el.dbgAudioRouted.textContent = info.audioPlaybackRouted ? 'true' : 'false';
@@ -152,6 +157,10 @@ function stopCapturingUI() {
   stopStatusPolling();
 }
 
+el.playbackMode.addEventListener('change', () => {
+  chrome.storage.local.set({ playbackMode: el.playbackMode.value });
+});
+
 el.btnCreateSession.addEventListener('click', async () => {
   if (!currentTab) return;
   showError(''); showOk('');
@@ -242,6 +251,7 @@ function startStatusPolling() {
             chunksSent: os.chunksSent ?? 0,
             lastChunkSize: os.lastChunkSize ?? 0,
             lastChunkTime: os.lastChunkTime ?? '-',
+            playbackMode: os.playbackMode ?? '-',
             audioPlaybackRouted: os.audioPlaybackRouted ?? null,
             audioContextState: os.audioContextState ?? null,
             playbackAudioState: os.playbackAudioState ?? null,
@@ -260,6 +270,10 @@ function stopStatusPolling() {
 
 (async () => {
   await loadCurrentTab();
+
+  const storedPm = await chrome.storage.local.get('playbackMode');
+  if (storedPm.playbackMode) el.playbackMode.value = storedPm.playbackMode;
+
   const backendOk = await checkBackend();
   if (backendOk) { setStatus('connected', 'Connected'); await loadSessions(); }
   else { setStatus('error', 'Backend Offline'); showError('Cannot reach backend at ' + BACKEND_URL); }

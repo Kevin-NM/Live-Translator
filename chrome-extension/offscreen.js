@@ -1,14 +1,20 @@
 let isCapturing = false;
 let currentSessionId = null;
 let currentTabId = null;
+let playbackMode = 'audioElement';
+
 let ws = null;
-let audioContext = null;
+let captureAudioContext = null;
+let captureSourceNode = null;
+let captureProcessorNode = null;
 let mediaStream = null;
-let scriptNode = null;
-let sourceNode = null;
+
+let playbackAudioContext = null;
+let playbackSourceNode = null;
 let playbackAudio = null;
 let audioPlaybackRouted = false;
 let playbackError = '';
+
 let chunksSent = 0;
 let lastChunkSize = 0;
 let lastChunkTime = null;
@@ -22,65 +28,101 @@ function log(...args) {
 
 function reportStatus(state, detail) {
   const payload = {
-    state,
-    detail,
-    chunksSent,
-    lastChunkSize,
-    lastChunkTime,
-    sessionId: currentSessionId,
-    audioPlaybackRouted,
-    audioContextState: audioContext ? audioContext.state : 'none',
+    state, detail, chunksSent, lastChunkSize, lastChunkTime,
+    sessionId: currentSessionId, playbackMode, audioPlaybackRouted,
+    audioContextState: captureAudioContext ? captureAudioContext.state : 'none',
     playbackAudioState: playbackAudio ? (playbackAudio.paused ? 'paused' : 'playing') : 'none',
     playbackError,
     timestamp: new Date().toISOString(),
   };
   log('status:', state, detail || '');
-  try {
-    chrome.runtime.sendMessage({ type: 'offscreen_status', payload });
-  } catch (e) {
-    log('reportStatus failed:', e.message);
-  }
+  try { chrome.runtime.sendMessage({ type: 'offscreen_status', payload }); } catch (e) { log('reportStatus failed:', e.message); }
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  log('received message:', msg.type);
-
   if (msg.type === 'START_RECORDING') {
+    playbackMode = msg.playbackMode || 'audioElement';
     handleStart(msg.sessionId, msg.tabId, msg.streamId, msg.backendUrl)
       .then(() => sendResponse({ ok: true }))
-      .catch(e => {
-        log('START_RECORDING failed:', e.message);
-        reportStatus('error', e.message);
-        sendResponse({ ok: false, error: e.message });
-      });
+      .catch(e => { log('START_RECORDING failed:', e.message); reportStatus('error', e.message); sendResponse({ ok: false, error: e.message }); });
     return true;
   }
-
   if (msg.type === 'STOP_RECORDING') {
     stopCurrentCapture('user stopped');
     sendResponse({ ok: true });
     return true;
   }
-
   if (msg.type === 'GET_STATUS') {
     sendResponse({
-      isCapturing,
-      currentSessionId,
-      currentTabId,
-      chunksSent,
-      lastChunkSize,
-      lastChunkTime,
-      audioPlaybackRouted,
-      audioContextState: audioContext ? audioContext.state : 'none',
+      isCapturing, currentSessionId, currentTabId, playbackMode,
+      chunksSent, lastChunkSize, lastChunkTime, audioPlaybackRouted,
+      audioContextState: captureAudioContext ? captureAudioContext.state : 'none',
       playbackAudioState: playbackAudio ? (playbackAudio.paused ? 'paused' : 'playing') : 'none',
       playbackError,
       wsState: ws ? ws.readyState : -1,
-      sampleRate: audioContext ? audioContext.sampleRate : null,
+      sampleRate: captureAudioContext ? captureAudioContext.sampleRate : null,
       pcmBuffered: pcmBuffer.length,
     });
     return true;
   }
 });
+
+async function setupPlayback(stream, mode) {
+  audioPlaybackRouted = false;
+  playbackError = '';
+
+  if (mode === 'none') {
+    log('playback disabled');
+    return;
+  }
+
+  if (mode === 'audioElement') {
+    try {
+      playbackAudio = new Audio();
+      playbackAudio.srcObject = stream;
+      playbackAudio.muted = false;
+      playbackAudio.volume = 1.0;
+      await playbackAudio.play();
+      audioPlaybackRouted = true;
+      log('audioElement playback started');
+    } catch (e) {
+      log('audioElement playback failed:', e.message);
+      playbackError = 'audioElement: ' + e.message;
+    }
+    return;
+  }
+
+  if (mode === 'audioContext') {
+    try {
+      playbackAudioContext = new AudioContext();
+      await playbackAudioContext.resume();
+      playbackSourceNode = playbackAudioContext.createMediaStreamSource(stream);
+      playbackSourceNode.connect(playbackAudioContext.destination);
+      audioPlaybackRouted = true;
+      log('audioContext playback started, state:', playbackAudioContext.state);
+    } catch (e) {
+      log('audioContext playback failed:', e.message);
+      playbackError = 'audioContext: ' + e.message;
+    }
+    return;
+  }
+}
+
+function stopPlayback() {
+  if (playbackAudio) {
+    try { playbackAudio.pause(); playbackAudio.srcObject = null; } catch {}
+    playbackAudio = null;
+  }
+  if (playbackSourceNode) {
+    try { playbackSourceNode.disconnect(); } catch {}
+    playbackSourceNode = null;
+  }
+  if (playbackAudioContext) {
+    try { playbackAudioContext.close(); } catch {}
+    playbackAudioContext = null;
+  }
+  audioPlaybackRouted = false;
+}
 
 async function handleStart(sessionId, tabId, streamId, backendWsUrl) {
   if (isCapturing) {
@@ -94,10 +136,9 @@ async function handleStart(sessionId, tabId, streamId, backendWsUrl) {
     await new Promise(r => setTimeout(r, 300));
   }
 
-  log('START sessionId=', sessionId, 'tabId=', tabId, 'streamId=', streamId);
+  log('START sessionId=', sessionId, 'tabId=', tabId, 'playbackMode=', playbackMode);
 
   const wsUrl = backendWsUrl || `ws://127.0.0.1:8787/ws/audio/${sessionId}`;
-
   reportStatus('connecting', 'Connecting WebSocket...');
 
   ws = new WebSocket(wsUrl);
@@ -110,18 +151,13 @@ async function handleStart(sessionId, tabId, streamId, backendWsUrl) {
   });
 
   ws.onclose = (e) => {
-    log('WebSocket CLOSED code=', e.code, 'reason=', e.reason);
-    if (isCapturing) {
-      reportStatus('error', 'WebSocket closed: code=' + e.code);
-      stopMediaCapture();
-      isCapturing = false;
-    }
+    log('WebSocket CLOSED code=', e.code);
+    if (isCapturing) { reportStatus('error', 'WebSocket closed: code=' + e.code); stopMediaCapture(); isCapturing = false; }
   };
   ws.onerror = () => { log('WebSocket ERROR'); reportStatus('error', 'WebSocket error'); };
 
   reportStatus('capturing', 'Getting tab audio...');
 
-  log('getUserMedia with streamId...');
   mediaStream = await navigator.mediaDevices.getUserMedia({
     audio: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId } },
     video: false,
@@ -133,43 +169,16 @@ async function handleStart(sessionId, tabId, streamId, backendWsUrl) {
     log('audio track:', track.label, 'enabled=', track.enabled);
   });
 
-  // Method A: AudioContext route-back
-  audioPlaybackRouted = false;
-  playbackError = '';
-  try {
-    audioContext = new AudioContext();
-    await audioContext.resume();
-    log('AudioContext state:', audioContext.state, 'sampleRate:', audioContext.sampleRate);
+  await setupPlayback(mediaStream, playbackMode);
 
-    sourceNode = audioContext.createMediaStreamSource(mediaStream);
-    sourceNode.connect(audioContext.destination);
-    audioPlaybackRouted = true;
-    log('AudioContext route-back: audio routed to destination');
-  } catch (e) {
-    log('AudioContext route-back failed:', e.message);
-    playbackError = 'AudioContext: ' + e.message;
-  }
+  captureAudioContext = new AudioContext();
+  await captureAudioContext.resume();
+  log('capture AudioContext state:', captureAudioContext.state, 'sampleRate:', captureAudioContext.sampleRate);
 
-  // Method B: HTMLAudioElement playback (backup)
-  try {
-    playbackAudio = new Audio();
-    playbackAudio.srcObject = mediaStream;
-    playbackAudio.muted = false;
-    playbackAudio.volume = 1.0;
-    await playbackAudio.play();
-    audioPlaybackRouted = true;
-    log('HTMLAudioElement playback started');
-  } catch (e) {
-    log('HTMLAudioElement playback failed:', e.message);
-    if (!audioPlaybackRouted) {
-      playbackError += ' AudioElement: ' + e.message;
-    }
-  }
+  captureSourceNode = captureAudioContext.createMediaStreamSource(mediaStream);
+  captureProcessorNode = captureAudioContext.createScriptProcessor(4096, 1, 1);
 
-  // ScriptProcessor for PCM capture
-  scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
-
-  scriptNode.onaudioprocess = (e) => {
+  captureProcessorNode.onaudioprocess = (e) => {
     if (!isCapturing) return;
     const inputData = e.inputBuffer.getChannelData(0);
     const newBuf = new Float32Array(pcmBuffer.length + inputData.length);
@@ -195,18 +204,15 @@ async function handleStart(sessionId, tabId, streamId, backendWsUrl) {
       if (ws && ws.readyState === WebSocket.OPEN) {
         try {
           ws.send(JSON.stringify({
-            type: 'audio_chunk',
-            format: 'pcm_s16le',
-            sample_rate: audioContext.sampleRate,
-            channels: 1,
-            timestamp_ms: Date.now(),
-            data: base64,
+            type: 'audio_chunk', format: 'pcm_s16le',
+            sample_rate: captureAudioContext.sampleRate, channels: 1,
+            timestamp_ms: Date.now(), data: base64,
           }));
           chunksSent++;
           lastChunkSize = int16.byteLength;
           lastChunkTime = new Date().toISOString();
           if (chunksSent % 5 === 0) {
-            log('PCM chunks sent:', chunksSent, 'buf:', pcmBuffer.length);
+            log('PCM chunks sent:', chunksSent);
             reportStatus('capturing', `Sent ${chunksSent} PCM chunks`);
           }
         } catch (err) {
@@ -217,12 +223,8 @@ async function handleStart(sessionId, tabId, streamId, backendWsUrl) {
     }
   };
 
-  // Connect processor: source → processor → destination (silent output for processing)
-  // sourceNode already connected to destination for playback
-  // processor needs its own connection to capture data
-  const captureSource = audioContext.createMediaStreamSource(mediaStream);
-  captureSource.connect(scriptNode);
-  scriptNode.connect(audioContext.destination);
+  captureSourceNode.connect(captureProcessorNode);
+  captureProcessorNode.connect(captureAudioContext.destination);
 
   isCapturing = true;
   currentSessionId = sessionId;
@@ -230,33 +232,26 @@ async function handleStart(sessionId, tabId, streamId, backendWsUrl) {
   chunksSent = 0;
   pcmBuffer = new Float32Array(0);
 
-  log('PCM capture STARTED, sampleRate:', audioContext.sampleRate, 'playback:', audioPlaybackRouted);
-  reportStatus('capturing', 'PCM recording started (sr=' + audioContext.sampleRate + ')');
+  log('PCM capture STARTED, sampleRate:', captureAudioContext.sampleRate, 'playbackMode:', playbackMode, 'routed:', audioPlaybackRouted);
+  reportStatus('capturing', 'PCM recording started (sr=' + captureAudioContext.sampleRate + ')');
 }
 
 function stopMediaCapture() {
-  if (scriptNode) { try { scriptNode.disconnect(); } catch {} scriptNode = null; }
-  if (sourceNode) { try { sourceNode.disconnect(); } catch {} sourceNode = null; }
-  if (audioContext) { try { audioContext.close(); } catch {} audioContext = null; }
-  if (playbackAudio) {
-    try { playbackAudio.pause(); playbackAudio.srcObject = null; } catch {}
-    playbackAudio = null;
-  }
+  stopPlayback();
+
+  if (captureProcessorNode) { try { captureProcessorNode.disconnect(); } catch {} captureProcessorNode = null; }
+  if (captureSourceNode) { try { captureSourceNode.disconnect(); } catch {} captureSourceNode = null; }
+  if (captureAudioContext) { try { captureAudioContext.close(); } catch {} captureAudioContext = null; }
   if (mediaStream) {
     mediaStream.getTracks().forEach(t => { try { t.stop(); } catch {} });
     mediaStream = null;
   }
-  audioPlaybackRouted = false;
   pcmBuffer = new Float32Array(0);
 }
 
 function stopCurrentCapture(reason) {
-  if (!isCapturing && !scriptNode) {
-    log('not capturing, nothing to stop');
-    return;
-  }
+  if (!isCapturing && !captureProcessorNode) { log('not capturing, nothing to stop'); return; }
   log('STOP_CAPTURE reason:', reason);
-
   stopMediaCapture();
 
   if (ws) {

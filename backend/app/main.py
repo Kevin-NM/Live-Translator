@@ -40,7 +40,7 @@ async def _on_translation_result(result):
         "provider_name": result.provider_name,
         "model": result.model,
         "latency_translate_ms": round(result.latency_ms, 2),
-        "status": "translated" if result.status == "completed" else "error",
+        "status": result.status,
         "error_message": result.error_message,
     })
 

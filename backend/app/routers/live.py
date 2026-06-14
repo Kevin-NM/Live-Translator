@@ -1,4 +1,5 @@
 import logging
+import time
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session as DbSession
 
@@ -11,6 +12,8 @@ from app.services.translation_pipeline import translation_pipeline
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["live"])
+
+STALE_THRESHOLD = 30.0
 
 
 @router.get("/api/audio/status", response_model=schemas.AudioStatusResponse)
@@ -98,12 +101,14 @@ async def live_start(session_id: int, db: DbSession = Depends(get_db)):
 
 @router.post("/api/sessions/{session_id}/live/stop", response_model=schemas.LiveStopResponse)
 async def live_stop(session_id: int, db: DbSession = Depends(get_db)):
+    from app.routers.websocket import reset_live_stats
     session = crud.get_session(db, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
     crud.stop_session(db, session_id)
     audio_pipeline.remove_buffer(session_id)
+    reset_live_stats(session_id)
 
     await ws_manager.broadcast_live(session_id, {
         "type": "status",
@@ -131,21 +136,40 @@ async def asr_preload(db: DbSession = Depends(get_db)):
 
 
 @router.get("/api/sessions/{session_id}/live/status", response_model=schemas.LiveStatusResponse)
-async def live_status(session_id: int):
+async def live_status(session_id: int, db: DbSession = Depends(get_db)):
     from app.routers.websocket import get_live_stats
     stats = get_live_stats(session_id)
+
+    session = crud.get_session(db, session_id)
+    session_status = session.status if session else "unknown"
+
+    now = time.time()
+    is_stale = False
+    if stats.audio_status == "disconnected" and stats.last_disconnect_time > 0:
+        if now - stats.last_disconnect_time > STALE_THRESHOLD:
+            is_stale = True
+
     return schemas.LiveStatusResponse(
         session_id=session_id,
+        session_status=session_status,
         audio_ws_connected=stats.audio_ws_connected,
+        audio_status=stats.audio_status,
+        capture_id=stats.capture_id or None,
         last_audio_chunk_at=stats.last_audio_chunk_at if stats.last_audio_chunk_at > 0 else None,
         last_audio_chunk_bytes=stats.last_audio_chunk_bytes,
         chunks_received=stats.chunks_received,
         last_decode_status=stats.last_decode_status,
         last_error=stats.last_error,
+        last_disconnect_time=stats.last_disconnect_time if stats.last_disconnect_time > 0 else None,
+        is_stale=is_stale,
         last_format=stats.last_format,
         last_sample_rate=stats.last_sample_rate,
         last_channels=stats.last_channels,
         pcm_duration_buffered=stats.pcm_duration_buffered,
+        translation_queue_size=translation_pipeline.queue_size,
+        active_translation_jobs=translation_pipeline.active_jobs,
+        translation_timeout_count=translation_pipeline.timeout_count,
+        last_translation_error=translation_pipeline.last_error,
     )
 
 
@@ -196,3 +220,51 @@ async def inject_text(session_id: int, data: schemas.InjectTextRequest, db: DbSe
     ))
 
     return {"session_id": session_id, "segment_id": segment.id, "status": "queued"}
+
+
+@router.post("/api/sessions/{session_id}/segments/recover")
+async def recover_segments(session_id: int, db: DbSession = Depends(get_db)):
+    from app.models import Segment
+    from app.services.translation_pipeline import TranslationJob
+    from datetime import datetime, timedelta
+
+    session = crud.get_session(db, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    threshold = datetime.utcnow() - timedelta(seconds=STALE_THRESHOLD)
+    stale = db.query(Segment).filter(
+        Segment.session_id == session_id,
+        Segment.status.in_(["pending", "queued", "translating"]),
+        Segment.created_at < threshold,
+    ).all()
+
+    recovered = 0
+    failed = 0
+    for seg in stale:
+        if session.status == "active":
+            try:
+                await translation_pipeline.submit(TranslationJob(
+                    session_id=session_id,
+                    segment_id=seg.id,
+                    source_text=seg.source_text,
+                    source_language=seg.source_language or "ja",
+                    mode="realtime",
+                ))
+                recovered += 1
+            except Exception:
+                crud.update_segment_result(
+                    db, seg.id,
+                    translated_text="", provider_name="", model="",
+                    latency_ms=0, status="error", error_message="recovery_failed",
+                )
+                failed += 1
+        else:
+            crud.update_segment_result(
+                db, seg.id,
+                translated_text="", provider_name="", model="",
+                latency_ms=0, status="error", error_message="stale_job_cancelled",
+            )
+            failed += 1
+
+    return {"session_id": session_id, "stale_found": len(stale), "recovered": recovered, "failed": failed}

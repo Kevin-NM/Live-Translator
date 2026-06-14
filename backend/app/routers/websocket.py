@@ -2,12 +2,13 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.services.ws_manager import ws_manager
 from app.services.audio_pipeline import audio_pipeline
-from app.services.asr_service import transcribe_audio, get_model_info
+from app.services.asr_service import transcribe_audio
 from app.services.translation_pipeline import translation_pipeline, TranslationJob
 from app.database import SessionLocal
 from app import crud
@@ -15,20 +16,24 @@ from app import crud
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+STALE_THRESHOLD_SECONDS = 30.0
+
 
 @dataclass
 class LiveSessionStats:
     audio_ws_connected: bool = False
+    audio_status: str = "idle"
     chunks_received: int = 0
     last_audio_chunk_at: float = 0.0
     last_audio_chunk_bytes: int = 0
-    last_decode_status: str = "pending"
+    last_decode_status: str = "idle"
     last_error: str = ""
-    session_active: bool = True
+    last_disconnect_time: float = 0.0
     last_format: str = ""
     last_sample_rate: int = 0
     last_channels: int = 0
     pcm_duration_buffered: float = 0.0
+    capture_id: str = ""
 
 
 _live_stats: dict[int, LiveSessionStats] = {}
@@ -44,6 +49,10 @@ def remove_live_stats(session_id: int):
     _live_stats.pop(session_id, None)
 
 
+def reset_live_stats(session_id: int):
+    _live_stats[session_id] = LiveSessionStats()
+
+
 @router.websocket("/ws/audio/{session_id}")
 async def ws_audio(ws: WebSocket, session_id: int):
     logger.info(f"Audio WS incoming connection: session={session_id}")
@@ -51,7 +60,9 @@ async def ws_audio(ws: WebSocket, session_id: int):
 
     stats = get_live_stats(session_id)
     stats.audio_ws_connected = True
+    stats.audio_status = "connected"
     stats.last_error = ""
+    stats.last_decode_status = "connected"
     logger.info(f"Audio WS connected: session={session_id}")
 
     settings = {}
@@ -63,44 +74,40 @@ async def ws_audio(ws: WebSocket, session_id: int):
 
     chunk_sec = float(settings.get("chunk_seconds", "3"))
     audio_pipeline.configure(chunk_seconds=chunk_sec, sample_rate=16000)
-    logger.info(f"Audio pipeline configured: chunk_seconds={chunk_sec}")
 
     try:
         while True:
             raw = await ws.receive_text()
-            logger.debug(f"Audio WS received raw message, length={len(raw)}")
 
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError as e:
-                logger.warning(f"Audio WS invalid JSON: {e}")
                 stats.last_error = f"Invalid JSON: {e}"
                 continue
 
             msg_type = msg.get("type", "")
-            logger.debug(f"Audio WS message type={msg_type}")
 
             if msg_type == "audio_chunk":
                 b64_data = msg.get("data", "")
                 fmt = msg.get("format", "pcm_s16le")
                 source_rate = msg.get("sample_rate", 48000)
                 channels = msg.get("channels", 1)
-                timestamp_ms = msg.get("timestamp_ms", 0)
+                chunk_capture_id = msg.get("capture_id", "")
 
-                logger.info(
-                    f"received audio_chunk: format={fmt} sample_rate={source_rate} "
-                    f"channels={channels} base64_length={len(b64_data)}"
-                )
+                if chunk_capture_id and stats.capture_id and chunk_capture_id != stats.capture_id:
+                    logger.warning(f"Audio chunk from stale capture_id={chunk_capture_id}, expected={stats.capture_id}")
+                    continue
+
+                if chunk_capture_id and not stats.capture_id:
+                    stats.capture_id = chunk_capture_id
 
                 try:
                     audio_bytes = base64.b64decode(b64_data)
                 except Exception as e:
-                    logger.error(f"base64 decode failed: {e}")
                     stats.last_error = f"base64 decode: {e}"
                     stats.last_decode_status = "error"
                     continue
 
-                logger.info(f"decoded audio bytes length={len(audio_bytes)}")
                 stats.chunks_received += 1
                 stats.last_audio_chunk_at = time.time()
                 stats.last_audio_chunk_bytes = len(audio_bytes)
@@ -117,35 +124,26 @@ async def ws_audio(ws: WebSocket, session_id: int):
                         session_id, audio_bytes, source_rate, channels
                     )
                 else:
-                    logger.warning(f"Unknown audio format: {fmt}")
                     stats.last_error = f"Unknown format: {fmt}"
                     stats.last_decode_status = "error"
                     continue
 
                 buf_info = audio_pipeline.get_buffer_info(session_id)
                 stats.pcm_duration_buffered = buf_info.get("buffered_seconds", 0)
-                logger.info(f"Buffer: {buf_info}")
 
                 if chunk is None:
-                    logger.debug("audio_pipeline returned None (buffering)")
                     stats.last_decode_status = "buffering"
                     continue
 
-                logger.info(f"ASR chunk ready: {len(chunk)} samples ({len(chunk)/16000:.1f}s)")
                 stats.last_decode_status = "ok"
-
                 asyncio.create_task(_process_asr_chunk(session_id, chunk, settings))
 
             elif msg_type == "stop":
                 logger.info(f"Audio WS received stop command for session={session_id}")
                 chunk = await audio_pipeline.flush_session(session_id)
                 if chunk is not None and len(chunk) > 0:
-                    logger.info(f"Flushed remaining audio: {len(chunk)} samples")
                     asyncio.create_task(_process_asr_chunk(session_id, chunk, settings))
                 break
-
-            else:
-                logger.warning(f"Audio WS unknown message type: {msg_type}")
 
     except WebSocketDisconnect as e:
         logger.info(f"Audio WS disconnected: session={session_id}, code={e.code}")
@@ -154,14 +152,17 @@ async def ws_audio(ws: WebSocket, session_id: int):
         stats.last_error = str(e)
     finally:
         stats.audio_ws_connected = False
+        stats.audio_status = "disconnected"
+        stats.last_disconnect_time = time.time()
+        stats.last_decode_status = "disconnected"
+        stats.pcm_duration_buffered = 0
         ws_manager.disconnect_audio(session_id)
         audio_pipeline.remove_buffer(session_id)
-        logger.info(f"Audio WS cleanup done: session={session_id}, total_chunks_received={stats.chunks_received}")
+        logger.info(f"Audio WS cleanup: session={session_id}, chunks={stats.chunks_received}")
 
 
 async def _process_asr_chunk(session_id: int, chunk, settings: dict):
     try:
-        logger.info(f"ASR processing: session={session_id}, samples={len(chunk)}")
         results = transcribe_audio(
             audio_data=chunk,
             sample_rate=16000,
@@ -172,10 +173,7 @@ async def _process_asr_chunk(session_id: int, chunk, settings: dict):
         )
 
         if not results:
-            logger.debug(f"ASR returned no results for session={session_id}")
             return
-
-        logger.info(f"ASR returned {len(results)} segments for session={session_id}")
 
         db = SessionLocal()
         try:
@@ -183,12 +181,10 @@ async def _process_asr_chunk(session_id: int, chunk, settings: dict):
             for asr_result in results:
                 text = asr_result.text.strip()
                 if not text or len(text) < 2:
-                    logger.debug(f"ASR segment too short, skipping: '{text}'")
                     continue
 
                 session = crud.get_session(db, session_id)
                 if not session or session.status != "active":
-                    logger.info(f"Session {session_id} no longer active, stopping ASR")
                     return
 
                 last_seg = db.query(Segment).filter(
@@ -197,7 +193,6 @@ async def _process_asr_chunk(session_id: int, chunk, settings: dict):
                 ).order_by(Segment.segment_index.desc()).first()
 
                 if last_seg and last_seg.source_text.strip() == text:
-                    logger.debug(f"ASR duplicate detected, skipping: '{text[:50]}'")
                     continue
 
                 segment_index = crud.get_next_segment_index(db, session_id)
@@ -213,8 +208,6 @@ async def _process_asr_chunk(session_id: int, chunk, settings: dict):
                     latency_asr_ms=asr_result.latency_ms,
                 )
 
-                logger.info(f"Segment created: id={segment.id}, text='{text[:50]}'")
-
                 await ws_manager.broadcast_live(session_id, {
                     "type": "final",
                     "session_id": session_id,
@@ -226,7 +219,7 @@ async def _process_asr_chunk(session_id: int, chunk, settings: dict):
                     "end_ms": asr_result.end_ms,
                     "latency_asr_ms": round(asr_result.latency_ms, 2),
                     "latency_translate_ms": None,
-                    "status": "asr_done",
+                    "status": "queued",
                 })
 
                 await translation_pipeline.submit(TranslationJob(
@@ -258,8 +251,7 @@ async def ws_live(ws: WebSocket, session_id: int):
             await ws.receive_text()
     except WebSocketDisconnect:
         pass
-    except Exception as e:
-        logger.error(f"Live WS error: {e}")
+    except Exception:
+        pass
     finally:
         ws_manager.disconnect_live(ws, session_id)
-        logger.info(f"Live WS disconnected: session={session_id}")

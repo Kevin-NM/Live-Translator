@@ -25,6 +25,7 @@ export const getSegments = (id) => api.get(`/sessions/${id}/segments`)
 export const startLive = (id) => api.post(`/sessions/${id}/live/start`)
 export const stopLive = (id) => api.post(`/sessions/${id}/live/stop`)
 export const injectLiveText = (id, data) => api.post(`/sessions/${id}/live/inject-text`, data)
+export const recoverSegments = (id) => api.post(`/sessions/${id}/segments/recover`)
 export const getAudioStatus = () => api.get('/audio/status')
 
 export const getSettings = () => api.get('/settings')

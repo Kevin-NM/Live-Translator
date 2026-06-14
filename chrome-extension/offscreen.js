@@ -1,12 +1,14 @@
 let isCapturing = false;
 let currentSessionId = null;
 let currentTabId = null;
+let captureId = null;
 let playbackMode = 'audioElement';
 
 let ws = null;
 let captureAudioContext = null;
 let captureSourceNode = null;
 let captureProcessorNode = null;
+let silentGainNode = null;
 let mediaStream = null;
 
 let playbackAudioContext = null;
@@ -22,6 +24,10 @@ let pcmBuffer = new Float32Array(0);
 
 const CHUNK_SAMPLES = 48000;
 
+function generateCaptureId() {
+  return 'cap_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+}
+
 function log(...args) {
   console.log('[OFFSCREEN]', ...args);
 }
@@ -29,8 +35,9 @@ function log(...args) {
 function reportStatus(state, detail) {
   const payload = {
     state, detail, chunksSent, lastChunkSize, lastChunkTime,
-    sessionId: currentSessionId, playbackMode, audioPlaybackRouted,
-    audioContextState: captureAudioContext ? captureAudioContext.state : 'none',
+    sessionId: currentSessionId, captureId, playbackMode,
+    audioPlaybackRouted, captureOutputMuted: true,
+    captureAudioContextState: captureAudioContext ? captureAudioContext.state : 'none',
     playbackAudioState: playbackAudio ? (playbackAudio.paused ? 'paused' : 'playing') : 'none',
     playbackError,
     timestamp: new Date().toISOString(),
@@ -42,7 +49,7 @@ function reportStatus(state, detail) {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'START_RECORDING') {
     playbackMode = msg.playbackMode || 'audioElement';
-    handleStart(msg.sessionId, msg.tabId, msg.streamId, msg.backendUrl)
+    handleStart(msg.sessionId, msg.tabId, msg.streamId, msg.backendUrl, msg.captureId)
       .then(() => sendResponse({ ok: true }))
       .catch(e => { log('START_RECORDING failed:', e.message); reportStatus('error', e.message); sendResponse({ ok: false, error: e.message }); });
     return true;
@@ -54,9 +61,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === 'GET_STATUS') {
     sendResponse({
-      isCapturing, currentSessionId, currentTabId, playbackMode,
+      isCapturing, currentSessionId, currentTabId, captureId, playbackMode,
       chunksSent, lastChunkSize, lastChunkTime, audioPlaybackRouted,
-      audioContextState: captureAudioContext ? captureAudioContext.state : 'none',
+      captureOutputMuted: true,
+      captureAudioContextState: captureAudioContext ? captureAudioContext.state : 'none',
       playbackAudioState: playbackAudio ? (playbackAudio.paused ? 'paused' : 'playing') : 'none',
       playbackError,
       wsState: ws ? ws.readyState : -1,
@@ -124,7 +132,7 @@ function stopPlayback() {
   audioPlaybackRouted = false;
 }
 
-async function handleStart(sessionId, tabId, streamId, backendWsUrl) {
+async function handleStart(sessionId, tabId, streamId, backendWsUrl, existingCaptureId) {
   if (isCapturing) {
     if (currentSessionId === sessionId && currentTabId === tabId) {
       log('already capturing same session, skip');
@@ -136,7 +144,8 @@ async function handleStart(sessionId, tabId, streamId, backendWsUrl) {
     await new Promise(r => setTimeout(r, 300));
   }
 
-  log('START sessionId=', sessionId, 'tabId=', tabId, 'playbackMode=', playbackMode);
+  captureId = existingCaptureId || generateCaptureId();
+  log('START sessionId=', sessionId, 'tabId=', tabId, 'captureId=', captureId, 'playbackMode=', playbackMode);
 
   const wsUrl = backendWsUrl || `ws://127.0.0.1:8787/ws/audio/${sessionId}`;
   reportStatus('connecting', 'Connecting WebSocket...');
@@ -178,8 +187,19 @@ async function handleStart(sessionId, tabId, streamId, backendWsUrl) {
   captureSourceNode = captureAudioContext.createMediaStreamSource(mediaStream);
   captureProcessorNode = captureAudioContext.createScriptProcessor(4096, 1, 1);
 
+  silentGainNode = captureAudioContext.createGain();
+  silentGainNode.gain.value = 0;
+
   captureProcessorNode.onaudioprocess = (e) => {
     if (!isCapturing) return;
+
+    if (e.outputBuffer) {
+      for (let ch = 0; ch < e.outputBuffer.numberOfChannels; ch++) {
+        const out = e.outputBuffer.getChannelData(ch);
+        out.fill(0);
+      }
+    }
+
     const inputData = e.inputBuffer.getChannelData(0);
     const newBuf = new Float32Array(pcmBuffer.length + inputData.length);
     newBuf.set(pcmBuffer);
@@ -206,7 +226,7 @@ async function handleStart(sessionId, tabId, streamId, backendWsUrl) {
           ws.send(JSON.stringify({
             type: 'audio_chunk', format: 'pcm_s16le',
             sample_rate: captureAudioContext.sampleRate, channels: 1,
-            timestamp_ms: Date.now(), data: base64,
+            timestamp_ms: Date.now(), capture_id: captureId, data: base64,
           }));
           chunksSent++;
           lastChunkSize = int16.byteLength;
@@ -224,7 +244,8 @@ async function handleStart(sessionId, tabId, streamId, backendWsUrl) {
   };
 
   captureSourceNode.connect(captureProcessorNode);
-  captureProcessorNode.connect(captureAudioContext.destination);
+  captureProcessorNode.connect(silentGainNode);
+  silentGainNode.connect(captureAudioContext.destination);
 
   isCapturing = true;
   currentSessionId = sessionId;
@@ -232,7 +253,7 @@ async function handleStart(sessionId, tabId, streamId, backendWsUrl) {
   chunksSent = 0;
   pcmBuffer = new Float32Array(0);
 
-  log('PCM capture STARTED, sampleRate:', captureAudioContext.sampleRate, 'playbackMode:', playbackMode, 'routed:', audioPlaybackRouted);
+  log('PCM capture STARTED, sampleRate:', captureAudioContext.sampleRate, 'playbackMode:', playbackMode, 'routed:', audioPlaybackRouted, 'captureOutputMuted: true');
   reportStatus('capturing', 'PCM recording started (sr=' + captureAudioContext.sampleRate + ')');
 }
 
@@ -240,6 +261,7 @@ function stopMediaCapture() {
   stopPlayback();
 
   if (captureProcessorNode) { try { captureProcessorNode.disconnect(); } catch {} captureProcessorNode = null; }
+  if (silentGainNode) { try { silentGainNode.disconnect(); } catch {} silentGainNode = null; }
   if (captureSourceNode) { try { captureSourceNode.disconnect(); } catch {} captureSourceNode = null; }
   if (captureAudioContext) { try { captureAudioContext.close(); } catch {} captureAudioContext = null; }
   if (mediaStream) {
@@ -252,6 +274,7 @@ function stopMediaCapture() {
 function stopCurrentCapture(reason) {
   if (!isCapturing && !captureProcessorNode) { log('not capturing, nothing to stop'); return; }
   log('STOP_CAPTURE reason:', reason);
+  const sentChunks = chunksSent;
   stopMediaCapture();
 
   if (ws) {
@@ -260,7 +283,9 @@ function stopCurrentCapture(reason) {
   }
 
   isCapturing = false;
+  const oldCaptureId = captureId;
   currentSessionId = null;
   currentTabId = null;
-  reportStatus('stopped', 'Capture stopped. Sent ' + chunksSent + ' chunks. Reason: ' + (reason || 'unknown'));
+  captureId = null;
+  reportStatus('stopped', 'Capture stopped. Sent ' + sentChunks + ' chunks. Reason: ' + (reason || 'unknown'));
 }

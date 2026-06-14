@@ -1,10 +1,14 @@
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+WORKER_COUNT = 3
+HARD_TIMEOUT_SECONDS = 15.0
 
 
 @dataclass
@@ -28,8 +32,23 @@ class TranslationJobResult:
     error_message: Optional[str] = None
 
 
-WORKER_COUNT = 3
-HARD_TIMEOUT_SECONDS = 15.0
+def _is_wrong_target_language(text: str, target_language: str) -> bool:
+    if not text or target_language != "zh-TW":
+        return False
+    text = text.strip()
+    if not text:
+        return False
+    has_cjk = bool(re.search(r'[\u4e00-\u9fff]', text))
+    has_ascii_words = len(re.findall(r'[a-zA-Z]{3,}', text)) > 2
+    if has_ascii_words and not has_cjk:
+        return True
+    if text.lower().startswith(('translate', 'translation', '翻譯', '譯文')):
+        return True
+    if text.startswith('{') or text.startswith('['):
+        return True
+    if len(text) > 10 and not has_cjk:
+        return True
+    return False
 
 
 class TranslationPipeline:
@@ -84,8 +103,19 @@ class TranslationPipeline:
         logger.info("Translation pipeline stopped")
 
     async def submit(self, job: TranslationJob):
+        from app.database import SessionLocal
+        from app import crud
+        db = SessionLocal()
+        try:
+            crud.update_segment_result(
+                db, job.segment_id,
+                translated_text="", provider_name="", model="",
+                latency_ms=0, status="queued", error_message=None,
+            )
+        finally:
+            db.close()
         await self._queue.put(job)
-        logger.debug(f"Translation job queued: session={job.session_id} segment={job.segment_id} queue_size={self._queue.qsize()}")
+        logger.debug(f"Translation job queued: segment={job.segment_id} queue_size={self._queue.qsize()}")
 
     async def _process_loop(self, worker_name: str):
         logger.info(f"Translation worker {worker_name} started")
@@ -99,6 +129,7 @@ class TranslationPipeline:
 
             self._active_jobs += 1
             try:
+                self._update_segment_status(job.segment_id, "translating")
                 result = await asyncio.wait_for(
                     self._translate_job(job),
                     timeout=HARD_TIMEOUT_SECONDS,
@@ -106,23 +137,23 @@ class TranslationPipeline:
             except asyncio.TimeoutError:
                 self._timeout_count += 1
                 self._last_error = f"Job timed out after {HARD_TIMEOUT_SECONDS}s"
-                logger.error(f"Translation job timed out: session={job.session_id} segment={job.segment_id}")
+                logger.error(f"Translation timeout: segment={job.segment_id}")
+                self._update_segment_error(job.segment_id, f"Translation timed out after {HARD_TIMEOUT_SECONDS}s")
                 result = TranslationJobResult(
                     session_id=job.session_id, segment_id=job.segment_id,
                     translated_text="", provider_name="", model="",
                     latency_ms=HARD_TIMEOUT_SECONDS * 1000, status="error",
                     error_message=f"Translation timed out after {HARD_TIMEOUT_SECONDS}s",
                 )
-                self._update_segment_error(job, result.error_message)
             except Exception as e:
                 self._last_error = str(e)
                 logger.error(f"Translation worker {worker_name} exception: {e}")
+                self._update_segment_error(job.segment_id, str(e))
                 result = TranslationJobResult(
                     session_id=job.session_id, segment_id=job.segment_id,
                     translated_text="", provider_name="", model="",
                     latency_ms=0, status="error", error_message=str(e),
                 )
-                self._update_segment_error(job, str(e))
             finally:
                 self._active_jobs -= 1
 
@@ -132,14 +163,31 @@ class TranslationPipeline:
                 except Exception as e:
                     logger.error(f"Translation result callback error: {e}")
 
-    def _update_segment_error(self, job: TranslationJob, error_message: str):
+    def _update_segment_status(self, segment_id: int, status: str):
+        try:
+            from app.database import SessionLocal
+            from app import crud
+            db = SessionLocal()
+            try:
+                seg = db.query(__import__('app.models', fromlist=['Segment']).Segment).filter_by(id=segment_id).first()
+                if seg:
+                    seg.status = status
+                    from datetime import datetime
+                    seg.updated_at = datetime.utcnow()
+                    db.commit()
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"Failed to update segment status: {e}")
+
+    def _update_segment_error(self, segment_id: int, error_message: str):
         try:
             from app.database import SessionLocal
             from app import crud
             db = SessionLocal()
             try:
                 crud.update_segment_result(
-                    db, job.segment_id,
+                    db, segment_id,
                     translated_text="", provider_name="", model="",
                     latency_ms=0, status="error", error_message=error_message,
                 )
@@ -202,11 +250,30 @@ class TranslationPipeline:
                 target_language=target_language,
             )
 
+            if result.status == "completed" and _is_wrong_target_language(result.translated_text, target_language):
+                logger.warning(
+                    f"Translation rejected: wrong target language. "
+                    f"segment={job.segment_id} target={target_language} "
+                    f"raw_output='{result.translated_text[:100]}'"
+                )
+                crud.update_segment_result(
+                    db, job.segment_id,
+                    translated_text="", provider_name=result.provider_name,
+                    model=result.model, latency_ms=result.latency_ms,
+                    status="rejected", error_message="wrong_target_language",
+                )
+                return TranslationJobResult(
+                    session_id=job.session_id, segment_id=job.segment_id,
+                    translated_text="", provider_name=result.provider_name,
+                    model=result.model, latency_ms=result.latency_ms,
+                    status="rejected", error_message="wrong_target_language",
+                )
+
             status = "translated" if result.status == "completed" else "error"
 
             crud.update_segment_result(
                 db, job.segment_id,
-                translated_text=result.translated_text,
+                translated_text=result.translated_text if status == "translated" else "",
                 provider_name=result.provider_name,
                 model=result.model,
                 latency_ms=result.latency_ms,
@@ -216,8 +283,7 @@ class TranslationPipeline:
 
             logger.info(
                 f"Translation job done: segment={job.segment_id} "
-                f"latency_ms={result.latency_ms:.0f} "
-                f"result='{result.translated_text[:60]}' status={status}"
+                f"latency_ms={result.latency_ms:.0f} status={status}"
             )
 
             if status == "error":
@@ -226,7 +292,7 @@ class TranslationPipeline:
             return TranslationJobResult(
                 session_id=job.session_id,
                 segment_id=job.segment_id,
-                translated_text=result.translated_text,
+                translated_text=result.translated_text if status == "translated" else "",
                 provider_name=result.provider_name,
                 model=result.model,
                 latency_ms=result.latency_ms,

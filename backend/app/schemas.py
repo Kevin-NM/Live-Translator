@@ -212,13 +212,22 @@ class ASRPreloadResponse(BaseModel):
 
 class LiveStatusResponse(BaseModel):
     session_id: int
+    session_status: str = "unknown"
     audio_ws_connected: bool = False
+    audio_status: str = "idle"
+    capture_id: Optional[str] = None
     last_audio_chunk_at: Optional[float] = None
     last_audio_chunk_bytes: int = 0
     chunks_received: int = 0
-    last_decode_status: str = "pending"
+    last_decode_status: str = "idle"
     last_error: str = ""
+    last_disconnect_time: Optional[float] = None
+    is_stale: bool = False
     last_format: str = ""
     last_sample_rate: int = 0
     last_channels: int = 0
     pcm_duration_buffered: float = 0.0
+    translation_queue_size: int = 0
+    active_translation_jobs: int = 0
+    translation_timeout_count: int = 0
+    last_translation_error: str = ""

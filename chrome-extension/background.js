@@ -136,7 +136,8 @@ async function handleStartCapture(sessionId, tabId, backendUrl) {
 
   await new Promise(resolve => setTimeout(resolve, 200));
 
-  console.log('[BG] sending START_RECORDING to offscreen...');
+  const captureId = 'cap_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+  console.log('[BG] sending START_RECORDING to offscreen, captureId=', captureId);
   const storedPm = await chrome.storage.local.get('playbackMode');
   const pm = storedPm.playbackMode || 'audioElement';
   try {
@@ -147,6 +148,7 @@ async function handleStartCapture(sessionId, tabId, backendUrl) {
       tabId: tabId,
       backendUrl: backendUrl,
       playbackMode: pm,
+      captureId: captureId,
     });
   } catch (e) {
     console.error('[BG] failed to send START_RECORDING:', e.message);
@@ -159,8 +161,9 @@ async function handleStartCapture(sessionId, tabId, backendUrl) {
     captureStatus: 'capturing',
     captureSessionId: sessionId,
     captureTabId: tabId,
+    captureId: captureId,
   });
-  console.log('[BG] capture started');
+  console.log('[BG] capture started, captureId=', captureId);
 }
 
 async function handleStopCapture() {

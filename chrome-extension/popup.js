@@ -19,6 +19,9 @@ const el = {
   dbgTabId: document.getElementById('dbgTabId'),
   dbgOffExists: document.getElementById('dbgOffExists'),
   dbgCaptureStatus: document.getElementById('dbgCaptureStatus'),
+  dbgAudioRouted: document.getElementById('dbgAudioRouted'),
+  dbgAudioCtx: document.getElementById('dbgAudioCtx'),
+  dbgPlaybackState: document.getElementById('dbgPlaybackState'),
   dbgWsState: document.getElementById('dbgWsState'),
   dbgChunks: document.getElementById('dbgChunks'),
   dbgLastSize: document.getElementById('dbgLastSize'),
@@ -58,6 +61,18 @@ function updateDebug(info) {
   if (info.captureStatus != null) {
     el.dbgCaptureStatus.textContent = info.captureStatus;
     el.dbgCaptureStatus.className = 'value ' + (info.captureStatus === 'capturing' ? 'ok' : info.captureStatus === 'error' ? 'err' : '');
+  }
+  if (info.audioPlaybackRouted != null) {
+    el.dbgAudioRouted.textContent = info.audioPlaybackRouted ? 'true' : 'false';
+    el.dbgAudioRouted.className = 'value ' + (info.audioPlaybackRouted ? 'ok' : 'err');
+  }
+  if (info.audioContextState != null) {
+    el.dbgAudioCtx.textContent = info.audioContextState;
+    el.dbgAudioCtx.className = 'value ' + (info.audioContextState === 'running' ? 'ok' : '');
+  }
+  if (info.playbackAudioState != null) {
+    el.dbgPlaybackState.textContent = info.playbackAudioState + (info.playbackError ? ' (' + info.playbackError + ')' : '');
+    el.dbgPlaybackState.className = 'value ' + (info.playbackAudioState === 'playing' ? 'ok' : info.playbackError ? 'err' : '');
   }
   if (info.chunksSent != null) el.dbgChunks.textContent = info.chunksSent;
   if (info.lastChunkSize != null) el.dbgLastSize.textContent = info.lastChunkSize > 0 ? info.lastChunkSize + ' bytes' : '-';
@@ -223,7 +238,15 @@ function startStatusPolling() {
         });
         if (state.offscreenStatus) {
           const os = state.offscreenStatus;
-          updateDebug({ chunksSent: os.chunksSent ?? 0, lastChunkSize: os.lastChunkSize ?? 0, lastChunkTime: os.lastChunkTime ?? '-' });
+          updateDebug({
+            chunksSent: os.chunksSent ?? 0,
+            lastChunkSize: os.lastChunkSize ?? 0,
+            lastChunkTime: os.lastChunkTime ?? '-',
+            audioPlaybackRouted: os.audioPlaybackRouted ?? null,
+            audioContextState: os.audioContextState ?? null,
+            playbackAudioState: os.playbackAudioState ?? null,
+            playbackError: os.playbackError ?? '',
+          });
           if (os.state === 'error') { setStatus('error', 'Error'); showError(os.detail || 'Unknown error'); }
         }
       }

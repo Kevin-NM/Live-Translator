@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session as DbSession
 
 from app.database import get_db
 from app import crud, schemas
-from app.services.asr_service import is_model_loaded, get_model_info
+from app.services.asr_service import is_model_loaded, get_model_info, preload_model
 from app.services.audio_pipeline import audio_pipeline
 from app.services.ws_manager import ws_manager
 from app.services.translation_pipeline import translation_pipeline
@@ -117,6 +117,17 @@ async def live_stop(session_id: int, db: DbSession = Depends(get_db)):
 @router.get("/api/settings", response_model=schemas.SettingsRead)
 async def get_settings(db: DbSession = Depends(get_db)):
     return crud.get_settings(db)
+
+
+@router.post("/api/asr/preload", response_model=schemas.ASRPreloadResponse)
+async def asr_preload(db: DbSession = Depends(get_db)):
+    settings = crud.get_settings(db)
+    result = preload_model(
+        model_size=settings.get("asr_model", "small"),
+        device=settings.get("device", "auto"),
+        compute_type=settings.get("compute_type", "int8_float16"),
+    )
+    return schemas.ASRPreloadResponse(**result)
 
 
 @router.get("/api/sessions/{session_id}/live/status", response_model=schemas.LiveStatusResponse)

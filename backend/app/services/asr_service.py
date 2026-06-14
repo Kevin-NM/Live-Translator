@@ -1,39 +1,32 @@
 import logging
+import time
+import threading
 import numpy as np
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-_whisper_model = None
-_whisper_device = None
-_whisper_compute_type = None
+_MODEL_CACHE = {}
+_MODEL_LOCK = threading.Lock()
 
 
-def _load_model(model_size: str = "small", device: str = "auto", compute_type: str = "int8_float16"):
-    global _whisper_model, _whisper_device, _whisper_compute_type
+def _get_cache_key(model_size: str, device: str, compute_type: str) -> str:
+    return f"{model_size}:{device}:{compute_type}"
 
-    if _whisper_model is not None and _whisper_device == device and _whisper_compute_type == compute_type:
-        return _whisper_model
 
-    try:
-        from faster_whisper import WhisperModel
-    except ImportError:
-        raise RuntimeError("faster-whisper is not installed. Run: pip install faster-whisper")
-
+def _resolve_device(device: str, compute_type: str) -> tuple[str, str]:
     if device == "auto":
         try:
             import torch
             if torch.cuda.is_available():
-                device = "cuda"
                 logger.info("ASR: Using CUDA GPU")
+                return "cuda", compute_type
             else:
-                device = "cpu"
-                compute_type = "int8"
                 logger.info("ASR: CUDA not available, falling back to CPU int8")
+                return "cpu", "int8"
         except Exception:
-            device = "cpu"
-            compute_type = "int8"
             logger.info("ASR: torch not available, falling back to CPU int8")
+            return "cpu", "int8"
 
     if device == "cuda" and compute_type == "int8_float16":
         try:
@@ -45,26 +38,48 @@ def _load_model(model_size: str = "small", device: str = "auto", compute_type: s
         except Exception:
             pass
 
-    logger.info(f"ASR: Loading model={model_size} device={device} compute_type={compute_type}")
-    try:
-        _whisper_model = WhisperModel(model_size, device=device, compute_type=compute_type)
-        _whisper_device = device
-        _whisper_compute_type = compute_type
-        logger.info("ASR: Model loaded successfully")
-        return _whisper_model
-    except Exception as e:
-        logger.error(f"ASR: Failed to load model: {e}")
-        if device == "cuda":
-            logger.info("ASR: Retrying with CPU int8")
-            try:
-                _whisper_model = WhisperModel(model_size, device="cpu", compute_type="int8")
-                _whisper_device = "cpu"
-                _whisper_compute_type = "int8"
-                return _whisper_model
-            except Exception as e2:
-                logger.error(f"ASR: CPU fallback also failed: {e2}")
+    return device, compute_type
+
+
+def _load_model(model_size: str = "small", device: str = "auto", compute_type: str = "int8_float16"):
+    device, compute_type = _resolve_device(device, compute_type)
+    key = _get_cache_key(model_size, device, compute_type)
+
+    with _MODEL_LOCK:
+        if key in _MODEL_CACHE:
+            logger.debug(f"ASR: using cached model={key}")
+            return _MODEL_CACHE[key]
+
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as e:
+            missing = str(e).split("'")[-2] if "'" in str(e) else str(e)
+            raise RuntimeError(
+                f"ASR dependency import failed: {missing}. "
+                f"Please run: .venv\\Scripts\\python.exe -m pip install -r requirements.txt"
+            )
+
+        logger.info(f"ASR: Loading model={model_size} device={device} compute_type={compute_type}")
+        load_start = time.monotonic()
+
+        try:
+            model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        except Exception as e:
+            logger.error(f"ASR: Failed to load model: {e}")
+            if device == "cuda":
+                logger.info("ASR: Retrying with CPU int8")
+                device, compute_type = "cpu", "int8"
+                key = _get_cache_key(model_size, device, compute_type)
+                if key in _MODEL_CACHE:
+                    return _MODEL_CACHE[key]
+                model = WhisperModel(model_size, device="cpu", compute_type="int8")
+            else:
                 raise
-        raise
+
+        load_ms = (time.monotonic() - load_start) * 1000
+        _MODEL_CACHE[key] = model
+        logger.info(f"ASR: Model loaded and cached key={key} load_latency_ms={load_ms:.0f}")
+        return model
 
 
 class ASRResult:
@@ -87,7 +102,6 @@ def transcribe_audio(
     compute_type: str = "int8_float16",
     chunk_start_ms: int = 0,
 ) -> list[ASRResult]:
-    import time
     start_time = time.monotonic()
 
     model = _load_model(model_size, device, compute_type)
@@ -133,13 +147,49 @@ def transcribe_audio(
         return []
 
 
+def preload_model(model_size: str = "small", device: str = "auto", compute_type: str = "int8_float16") -> dict:
+    start_time = time.monotonic()
+    try:
+        device, compute_type = _resolve_device(device, compute_type)
+        key = _get_cache_key(model_size, device, compute_type)
+        already_cached = key in _MODEL_CACHE
+        _load_model(model_size, device, compute_type)
+        latency_ms = (time.monotonic() - start_time) * 1000
+        return {
+            "status": "ok",
+            "model": model_size,
+            "device": device,
+            "compute_type": compute_type,
+            "cached": already_cached,
+            "load_latency_ms": round(latency_ms, 2),
+            "error_message": None,
+        }
+    except Exception as e:
+        latency_ms = (time.monotonic() - start_time) * 1000
+        return {
+            "status": "error",
+            "model": model_size,
+            "device": device,
+            "compute_type": compute_type,
+            "cached": False,
+            "load_latency_ms": round(latency_ms, 2),
+            "error_message": str(e),
+        }
+
+
 def is_model_loaded() -> bool:
-    return _whisper_model is not None
+    return len(_MODEL_CACHE) > 0
 
 
 def get_model_info() -> dict:
-    return {
-        "loaded": _whisper_model is not None,
-        "device": _whisper_device,
-        "compute_type": _whisper_compute_type,
-    }
+    keys = list(_MODEL_CACHE.keys())
+    if keys:
+        parts = keys[-1].split(":")
+        return {
+            "loaded": True,
+            "model": parts[0] if len(parts) > 0 else None,
+            "device": parts[1] if len(parts) > 1 else None,
+            "compute_type": parts[2] if len(parts) > 2 else None,
+            "cached_keys": keys,
+        }
+    return {"loaded": False, "device": None, "compute_type": None, "cached_keys": []}

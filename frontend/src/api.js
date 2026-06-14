@@ -29,6 +29,7 @@ export const getAudioStatus = () => api.get('/audio/status')
 
 export const getSettings = () => api.get('/settings')
 export const updateSettings = (data) => api.patch('/settings', data)
+export const preloadAsr = () => api.post('/asr/preload')
 
 export const exportSession = (id, format) =>
   api.get(`/sessions/${id}/export`, { params: { format }, responseType: 'blob' })

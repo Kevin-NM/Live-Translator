@@ -6,6 +6,9 @@ let audioContext = null;
 let mediaStream = null;
 let scriptNode = null;
 let sourceNode = null;
+let playbackAudio = null;
+let audioPlaybackRouted = false;
+let playbackError = '';
 let chunksSent = 0;
 let lastChunkSize = 0;
 let lastChunkTime = null;
@@ -25,6 +28,10 @@ function reportStatus(state, detail) {
     lastChunkSize,
     lastChunkTime,
     sessionId: currentSessionId,
+    audioPlaybackRouted,
+    audioContextState: audioContext ? audioContext.state : 'none',
+    playbackAudioState: playbackAudio ? (playbackAudio.paused ? 'paused' : 'playing') : 'none',
+    playbackError,
     timestamp: new Date().toISOString(),
   };
   log('status:', state, detail || '');
@@ -63,6 +70,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       chunksSent,
       lastChunkSize,
       lastChunkTime,
+      audioPlaybackRouted,
+      audioContextState: audioContext ? audioContext.state : 'none',
+      playbackAudioState: playbackAudio ? (playbackAudio.paused ? 'paused' : 'playing') : 'none',
+      playbackError,
       wsState: ws ? ws.readyState : -1,
       sampleRate: audioContext ? audioContext.sampleRate : null,
       pcmBuffered: pcmBuffer.length,
@@ -122,10 +133,40 @@ async function handleStart(sessionId, tabId, streamId, backendWsUrl) {
     log('audio track:', track.label, 'enabled=', track.enabled);
   });
 
-  audioContext = new AudioContext();
-  log('AudioContext sampleRate:', audioContext.sampleRate);
+  // Method A: AudioContext route-back
+  audioPlaybackRouted = false;
+  playbackError = '';
+  try {
+    audioContext = new AudioContext();
+    await audioContext.resume();
+    log('AudioContext state:', audioContext.state, 'sampleRate:', audioContext.sampleRate);
 
-  sourceNode = audioContext.createMediaStreamSource(mediaStream);
+    sourceNode = audioContext.createMediaStreamSource(mediaStream);
+    sourceNode.connect(audioContext.destination);
+    audioPlaybackRouted = true;
+    log('AudioContext route-back: audio routed to destination');
+  } catch (e) {
+    log('AudioContext route-back failed:', e.message);
+    playbackError = 'AudioContext: ' + e.message;
+  }
+
+  // Method B: HTMLAudioElement playback (backup)
+  try {
+    playbackAudio = new Audio();
+    playbackAudio.srcObject = mediaStream;
+    playbackAudio.muted = false;
+    playbackAudio.volume = 1.0;
+    await playbackAudio.play();
+    audioPlaybackRouted = true;
+    log('HTMLAudioElement playback started');
+  } catch (e) {
+    log('HTMLAudioElement playback failed:', e.message);
+    if (!audioPlaybackRouted) {
+      playbackError += ' AudioElement: ' + e.message;
+    }
+  }
+
+  // ScriptProcessor for PCM capture
   scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
 
   scriptNode.onaudioprocess = (e) => {
@@ -176,7 +217,11 @@ async function handleStart(sessionId, tabId, streamId, backendWsUrl) {
     }
   };
 
-  sourceNode.connect(scriptNode);
+  // Connect processor: source → processor → destination (silent output for processing)
+  // sourceNode already connected to destination for playback
+  // processor needs its own connection to capture data
+  const captureSource = audioContext.createMediaStreamSource(mediaStream);
+  captureSource.connect(scriptNode);
   scriptNode.connect(audioContext.destination);
 
   isCapturing = true;
@@ -185,7 +230,7 @@ async function handleStart(sessionId, tabId, streamId, backendWsUrl) {
   chunksSent = 0;
   pcmBuffer = new Float32Array(0);
 
-  log('PCM capture STARTED, sampleRate:', audioContext.sampleRate);
+  log('PCM capture STARTED, sampleRate:', audioContext.sampleRate, 'playback:', audioPlaybackRouted);
   reportStatus('capturing', 'PCM recording started (sr=' + audioContext.sampleRate + ')');
 }
 
@@ -193,10 +238,15 @@ function stopMediaCapture() {
   if (scriptNode) { try { scriptNode.disconnect(); } catch {} scriptNode = null; }
   if (sourceNode) { try { sourceNode.disconnect(); } catch {} sourceNode = null; }
   if (audioContext) { try { audioContext.close(); } catch {} audioContext = null; }
+  if (playbackAudio) {
+    try { playbackAudio.pause(); playbackAudio.srcObject = null; } catch {}
+    playbackAudio = null;
+  }
   if (mediaStream) {
     mediaStream.getTracks().forEach(t => { try { t.stop(); } catch {} });
     mediaStream = null;
   }
+  audioPlaybackRouted = false;
   pcmBuffer = new Float32Array(0);
 }
 

@@ -200,6 +200,16 @@ class SettingsUpdate(BaseModel):
     source_language: Optional[str] = None
 
 
+class ASRPreloadResponse(BaseModel):
+    status: str
+    model: Optional[str] = None
+    device: Optional[str] = None
+    compute_type: Optional[str] = None
+    cached: bool = False
+    load_latency_ms: float = 0
+    error_message: Optional[str] = None
+
+
 class LiveStatusResponse(BaseModel):
     session_id: int
     audio_ws_connected: bool = False

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { getSettings, updateSettings } from '../api'
+import { getSettings, updateSettings, preloadAsr } from '../api'
 import { useI18n } from '../i18n'
 
 export default function Settings() {
@@ -10,6 +10,8 @@ export default function Settings() {
   })
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
+  const [preloadResult, setPreloadResult] = useState(null)
+  const [preloading, setPreloading] = useState(false)
 
   useEffect(() => {
     getSettings().then(r => setSettings(r.data)).catch(() => {})
@@ -23,6 +25,16 @@ export default function Settings() {
       setMsg(t('settings.saved'))
     } catch { setMsg(t('settings.save_failed')) }
     finally { setSaving(false) }
+  }
+
+  const handlePreload = async () => {
+    setPreloading(true); setPreloadResult(null)
+    try {
+      const res = await preloadAsr()
+      setPreloadResult(res.data)
+    } catch (e) {
+      setPreloadResult({ status: 'error', error_message: e.response?.data?.detail || e.message })
+    } finally { setPreloading(false) }
   }
 
   const Field = ({ label, children }) => (
@@ -85,6 +97,27 @@ export default function Settings() {
           {msg && <span className={`text-sm ${msg === t('settings.saved') ? 'text-green-400' : 'text-red-400'}`}>{msg}</span>}
         </div>
       </div>
+
+      <div className="bg-gray-800 rounded-xl p-6 border border-gray-700 space-y-3">
+        <h2 className="text-lg font-semibold">ASR Model Preload</h2>
+        <p className="text-sm text-gray-500">
+          第一次使用 faster-whisper 會從 Hugging Face 下載 ASR 模型到本機快取。下載完成後可離線重用。這是語音辨識模型，不是翻譯 API。
+        </p>
+        <div className="flex items-center gap-4">
+          <button onClick={handlePreload} disabled={preloading}
+            className="bg-green-600 hover:bg-green-700 text-white px-5 py-2 rounded-lg text-sm font-medium disabled:opacity-50">
+            {preloading ? 'Loading...' : 'Preload ASR Model'}
+          </button>
+          {preloadResult && (
+            <span className={`text-sm ${preloadResult.status === 'ok' ? 'text-green-400' : 'text-red-400'}`}>
+              {preloadResult.status === 'ok'
+                ? `Loaded ${preloadResult.model} on ${preloadResult.device} (${preloadResult.load_latency_ms}ms) ${preloadResult.cached ? '[cached]' : '[downloaded]'}`
+                : preloadResult.error_message}
+            </span>
+          )}
+        </div>
+      </div>
+
       <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
         <h2 className="text-lg font-semibold mb-2">{t('settings.requirements')}</h2>
         <ul className="text-sm text-gray-400 space-y-1">

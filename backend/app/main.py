@@ -8,7 +8,13 @@ from app.services.ws_manager import ws_manager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 
-app = FastAPI(title="Live Translator", version="0.2.0")
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+logging.getLogger("filelock").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+app = FastAPI(title="Live Translator", version="0.2.1")
 
 app.add_middleware(
     CORSMiddleware,

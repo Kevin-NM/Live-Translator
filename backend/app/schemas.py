@@ -59,6 +59,11 @@ class TranslationTestRequest(BaseModel):
     source_language: Optional[str] = "ja"
 
 
+class InjectTextRequest(BaseModel):
+    source_language: str = "ja"
+    source_text: str = Field(..., min_length=1)
+
+
 class TranslationTestResponse(BaseModel):
     status: str
     latency_ms: float

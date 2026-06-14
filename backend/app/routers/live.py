@@ -140,3 +140,47 @@ async def live_status(session_id: int):
 @router.patch("/api/settings", response_model=schemas.SettingsRead)
 async def update_settings(data: schemas.SettingsUpdate, db: DbSession = Depends(get_db)):
     return crud.update_settings(db, data)
+
+
+@router.post("/api/sessions/{session_id}/live/inject-text")
+async def inject_text(session_id: int, data: schemas.InjectTextRequest, db: DbSession = Depends(get_db)):
+    from app.services.translation_pipeline import TranslationJob
+
+    session = crud.get_session(db, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.status == "stopped":
+        raise HTTPException(status_code=400, detail="Session is stopped")
+
+    segment_index = crud.get_next_segment_index(db, session_id)
+    segment = crud.create_segment(
+        db, session_id, segment_index,
+        source_language=data.source_language,
+        source_text=data.source_text.strip(),
+        is_final=True,
+        asr_provider="inject",
+    )
+
+    await ws_manager.broadcast_live(session_id, {
+        "type": "final",
+        "session_id": session_id,
+        "segment_id": segment.id,
+        "source_language": data.source_language,
+        "source_text": data.source_text.strip(),
+        "translated_text": None,
+        "start_ms": None,
+        "end_ms": None,
+        "latency_asr_ms": 0,
+        "latency_translate_ms": None,
+        "status": "translating",
+    })
+
+    await translation_pipeline.submit(TranslationJob(
+        session_id=session_id,
+        segment_id=segment.id,
+        source_text=data.source_text.strip(),
+        source_language=data.source_language,
+        mode="realtime",
+    ))
+
+    return {"session_id": session_id, "segment_id": segment.id, "status": "queued"}

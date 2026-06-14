@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
+import { injectLiveText } from '../api'
 
 export default function LivePanel({ sessionId, sessionStatus }) {
   const [liveSegments, setLiveSegments] = useState([])
   const [wsStatus, setWsStatus] = useState('disconnected')
   const [backendStats, setBackendStats] = useState(null)
+  const [injectText, setInjectText] = useState('')
+  const [injectLang, setInjectLang] = useState('ja')
+  const [injecting, setInjecting] = useState(false)
   const wsRef = useRef(null)
   const segmentsRef = useRef([])
 
@@ -106,6 +110,19 @@ export default function LivePanel({ sessionId, sessionStatus }) {
     setLiveSegments([])
   }
 
+  const handleInject = async () => {
+    if (!injectText.trim()) return
+    setInjecting(true)
+    try {
+      await injectLiveText(sessionId, { source_language: injectLang, source_text: injectText.trim() })
+      setInjectText('')
+    } catch (e) {
+      console.error('[LivePanel] inject failed:', e)
+    } finally {
+      setInjecting(false)
+    }
+  }
+
   const extConnected = backendStats?.audio_ws_connected || false
   const chunksReceived = backendStats?.chunks_received || 0
   const lastChunkAt = backendStats?.last_audio_chunk_at
@@ -161,7 +178,26 @@ export default function LivePanel({ sessionId, sessionStatus }) {
 
       <div className="bg-blue-900/30 border border-blue-800 rounded-lg p-3 text-sm text-blue-200">
         <strong>Instructions:</strong> Open the Chrome Extension popup, select this session, choose the Chrome tab, and click "Start Capture".
-        Live subtitles will appear below.
+        Live subtitles will appear below. Or use the inject box below to test the pipeline without Chrome audio.
+      </div>
+
+      <div className="bg-gray-750 rounded-lg p-3 border border-gray-600 space-y-2">
+        <div className="text-xs text-gray-500 font-semibold">Inject Text (Pipeline Test)</div>
+        <div className="flex gap-2">
+          <select value={injectLang} onChange={e => setInjectLang(e.target.value)}
+            className="bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs focus:outline-none focus:border-blue-500">
+            <option value="ja">JA</option>
+            <option value="en">EN</option>
+          </select>
+          <input type="text" value={injectText} onChange={e => setInjectText(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleInject() }}
+            className="flex-1 bg-gray-700 border border-gray-600 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+            placeholder="Type text to inject into live pipeline..." />
+          <button onClick={handleInject} disabled={injecting || !injectText.trim()}
+            className="bg-yellow-600 hover:bg-yellow-700 text-white px-3 py-1.5 rounded text-xs font-medium disabled:opacity-50">
+            {injecting ? '...' : 'Inject'}
+          </button>
+        </div>
       </div>
 
       {liveSegments.length > 0 && (

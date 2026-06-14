@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session as DbSession
 from app.database import get_db
 from app import crud, schemas
 from app.services.asr_service import is_model_loaded, get_model_info
-from app.services.audio_pipeline import check_ffmpeg, audio_pipeline
+from app.services.audio_pipeline import audio_pipeline
 from app.services.ws_manager import ws_manager
 from app.services.translation_pipeline import translation_pipeline
 
@@ -78,9 +78,6 @@ async def live_start(session_id: int, db: DbSession = Depends(get_db)):
     if session.status == "stopped":
         raise HTTPException(status_code=400, detail="Session is stopped")
 
-    if not check_ffmpeg():
-        raise HTTPException(status_code=500, detail="ffmpeg not found. Install ffmpeg and add to PATH.")
-
     settings = crud.get_settings(db)
 
     try:
@@ -134,6 +131,10 @@ async def live_status(session_id: int):
         chunks_received=stats.chunks_received,
         last_decode_status=stats.last_decode_status,
         last_error=stats.last_error,
+        last_format=stats.last_format,
+        last_sample_rate=stats.last_sample_rate,
+        last_channels=stats.last_channels,
+        pcm_duration_buffered=stats.pcm_duration_buffered,
     )
 
 

@@ -1,57 +1,18 @@
 import asyncio
-import base64
-import io
 import logging
-import struct
-import subprocess
-import shutil
 import numpy as np
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
-def check_ffmpeg() -> bool:
-    return shutil.which("ffmpeg") is not None
-
-
-def decode_webm_to_pcm(webm_bytes: bytes, sample_rate: int = 16000) -> Optional[np.ndarray]:
-    if not check_ffmpeg():
-        logger.error("ffmpeg not found in PATH")
-        return None
-
-    try:
-        proc = subprocess.run(
-            [
-                "ffmpeg", "-i", "pipe:0",
-                "-f", "s16le",
-                "-acodec", "pcm_s16le",
-                "-ar", str(sample_rate),
-                "-ac", "1",
-                "-loglevel", "error",
-                "pipe:1",
-            ],
-            input=webm_bytes,
-            capture_output=True,
-            timeout=10,
-        )
-        if proc.returncode != 0:
-            logger.error(f"ffmpeg decode failed: {proc.stderr.decode('utf-8', errors='replace')[:200]}")
-            return None
-
-        pcm_bytes = proc.stdout
-        if len(pcm_bytes) < 320:
-            return None
-
-        audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        return audio
-
-    except subprocess.TimeoutExpired:
-        logger.error("ffmpeg decode timed out")
-        return None
-    except Exception as e:
-        logger.error(f"Audio decode error: {e}")
-        return None
+def resample_pcm(pcm: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
+    if src_rate == dst_rate:
+        return pcm
+    duration = len(pcm) / src_rate
+    dst_len = int(duration * dst_rate)
+    indices = np.linspace(0, len(pcm) - 1, dst_len)
+    return np.interp(indices, np.arange(len(pcm)), pcm).astype(np.float32)
 
 
 class AudioBuffer:
@@ -62,11 +23,24 @@ class AudioBuffer:
         self._buffer = np.array([], dtype=np.float32)
         self._total_samples = 0
         self._lock = asyncio.Lock()
+        self._src_sample_rate = sample_rate
 
-    async def add_audio(self, pcm_data: np.ndarray) -> Optional[np.ndarray]:
+    def set_source_rate(self, rate: int):
+        self._src_sample_rate = rate
+
+    async def add_pcm(self, pcm_data: np.ndarray, source_rate: int) -> Optional[np.ndarray]:
         async with self._lock:
+            if source_rate != self.sample_rate:
+                pcm_data = resample_pcm(pcm_data, source_rate, self.sample_rate)
+
             self._buffer = np.concatenate([self._buffer, pcm_data])
             self._total_samples += len(pcm_data)
+
+            logger.debug(
+                f"AudioBuffer: added {len(pcm_data)} samples, "
+                f"buffer={len(self._buffer)} ({len(self._buffer)/self.sample_rate:.1f}s), "
+                f"total={self._total_samples} ({self._total_samples/self.sample_rate:.1f}s)"
+            )
 
             if len(self._buffer) >= self.chunk_samples:
                 chunk = self._buffer[:self.chunk_samples]
@@ -82,6 +56,10 @@ class AudioBuffer:
                 return chunk
             self._buffer = np.array([], dtype=np.float32)
             return None
+
+    @property
+    def buffered_seconds(self) -> float:
+        return len(self._buffer) / self.sample_rate
 
     @property
     def total_seconds(self) -> float:
@@ -113,16 +91,43 @@ class AudioPipeline:
     def remove_buffer(self, session_id: int):
         self._buffers.pop(session_id, None)
 
-    async def process_chunk(self, session_id: int, webm_bytes: bytes) -> Optional[np.ndarray]:
-        pcm = decode_webm_to_pcm(webm_bytes, self._sample_rate)
-        if pcm is None:
-            return None
+    async def process_pcm_s16le(
+        self, session_id: int, pcm_bytes: bytes, source_rate: int, channels: int
+    ) -> Optional[np.ndarray]:
+        pcm_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
+        pcm_float32 = pcm_int16.astype(np.float32) / 32768.0
+
+        if channels > 1:
+            pcm_float32 = pcm_float32.reshape(-1, channels).mean(axis=1)
+
         buffer = self.get_buffer(session_id)
-        return await buffer.add_audio(pcm)
+        buffer.set_source_rate(source_rate)
+        return await buffer.add_pcm(pcm_float32, source_rate)
+
+    async def process_pcm_f32le(
+        self, session_id: int, pcm_bytes: bytes, source_rate: int, channels: int
+    ) -> Optional[np.ndarray]:
+        pcm_float32 = np.frombuffer(pcm_bytes, dtype=np.float32)
+
+        if channels > 1:
+            pcm_float32 = pcm_float32.reshape(-1, channels).mean(axis=1)
+
+        buffer = self.get_buffer(session_id)
+        buffer.set_source_rate(source_rate)
+        return await buffer.add_pcm(pcm_float32, source_rate)
 
     async def flush_session(self, session_id: int) -> Optional[np.ndarray]:
         buffer = self.get_buffer(session_id)
         return await buffer.flush()
+
+    def get_buffer_info(self, session_id: int) -> dict:
+        buffer = self._buffers.get(session_id)
+        if not buffer:
+            return {"buffered_seconds": 0, "total_seconds": 0}
+        return {
+            "buffered_seconds": round(buffer.buffered_seconds, 2),
+            "total_seconds": round(buffer.total_seconds, 2),
+        }
 
 
 audio_pipeline = AudioPipeline()

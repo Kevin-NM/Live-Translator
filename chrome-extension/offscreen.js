@@ -1,12 +1,17 @@
 let ws = null;
-let mediaRecorder = null;
-let audioStream = null;
+let audioContext = null;
+let mediaStream = null;
+let scriptNode = null;
 let chunksSent = 0;
 let lastChunkSize = 0;
 let lastChunkTime = null;
 let recording = false;
 let sessionId = null;
 let backendWsUrl = null;
+let pcmBuffer = new Float32Array(0);
+let sourceNode = null;
+
+const CHUNK_SAMPLES = 48000;
 
 function log(...args) {
   console.log('[OFFSCREEN]', ...args);
@@ -26,7 +31,7 @@ function reportStatus(state, detail) {
   try {
     chrome.runtime.sendMessage({ type: 'offscreen_status', payload });
   } catch (e) {
-    log('failed to report status (service worker may be inactive):', e.message);
+    log('failed to report status:', e.message);
   }
 }
 
@@ -60,6 +65,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       lastChunkTime,
       sessionId,
       wsState: ws ? ws.readyState : -1,
+      sampleRate: audioContext ? audioContext.sampleRate : null,
+      pcmBuffered: pcmBuffer.length,
     });
     return true;
   }
@@ -77,17 +84,16 @@ async function startRecording(streamId) {
   reportStatus('connecting', 'Connecting WebSocket...');
 
   ws = new WebSocket(backendWsUrl);
+  ws.binaryType = 'arraybuffer';
 
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('WebSocket open timed out')), 8000);
-
     ws.onopen = () => {
       clearTimeout(timeout);
       log('WebSocket OPEN');
       resolve();
     };
-
-    ws.onerror = (e) => {
+    ws.onerror = () => {
       clearTimeout(timeout);
       log('WebSocket ERROR during open');
       reject(new Error('WebSocket connection failed. Is backend running on 8787?'));
@@ -98,7 +104,7 @@ async function startRecording(streamId) {
     log('WebSocket CLOSED code=', e.code, 'reason=', e.reason, 'wasClean=', e.wasClean);
     if (recording) {
       reportStatus('error', 'WebSocket closed: code=' + e.code + ' reason=' + (e.reason || 'none'));
-      stopMediaRecorder();
+      stopMediaCapture();
       recording = false;
     }
   };
@@ -112,7 +118,7 @@ async function startRecording(streamId) {
 
   log('getUserMedia with streamId...');
   try {
-    audioStream = await navigator.mediaDevices.getUserMedia({
+    mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         mandatory: {
           chromeMediaSource: 'tab',
@@ -121,13 +127,13 @@ async function startRecording(streamId) {
       },
       video: false,
     });
-    log('getUserMedia SUCCESS, tracks:', audioStream.getTracks().length);
+    log('getUserMedia SUCCESS, tracks:', mediaStream.getTracks().length);
   } catch (e) {
     log('getUserMedia FAILED:', e.message);
     throw new Error('getUserMedia failed: ' + e.message);
   }
 
-  audioStream.getAudioTracks().forEach(track => {
+  mediaStream.getAudioTracks().forEach(track => {
     track.onended = () => {
       log('audio track ENDED');
       reportStatus('stopped', 'Tab audio track ended');
@@ -136,94 +142,110 @@ async function startRecording(streamId) {
     log('audio track:', track.label, 'enabled=', track.enabled);
   });
 
-  const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-    ? 'audio/webm;codecs=opus'
-    : 'audio/webm';
+  audioContext = new AudioContext();
+  log('AudioContext sampleRate:', audioContext.sampleRate);
 
-  log('MediaRecorder mimeType=', mimeType);
+  sourceNode = audioContext.createMediaStreamSource(mediaStream);
 
-  mediaRecorder = new MediaRecorder(audioStream, { mimeType });
+  const bufferSize = 4096;
+  scriptNode = audioContext.createScriptProcessor(bufferSize, 1, 1);
 
-  mediaRecorder.ondataavailable = async (e) => {
-    if (!e.data || e.data.size === 0) {
-      log('dataavailable: empty chunk, skipping');
-      return;
-    }
+  scriptNode.onaudioprocess = (e) => {
+    if (!recording) return;
 
-    log('dataavailable: chunk size=', e.data.size);
+    const inputData = e.inputBuffer.getChannelData(0);
+    const newBuffer = new Float32Array(pcmBuffer.length + inputData.length);
+    newBuffer.set(pcmBuffer);
+    newBuffer.set(inputData, pcmBuffer.length);
+    pcmBuffer = newBuffer;
 
-    const arrayBuffer = await e.data.arrayBuffer();
-    const uint8 = new Uint8Array(arrayBuffer);
-    let binary = '';
-    for (let i = 0; i < uint8.length; i++) {
-      binary += String.fromCharCode(uint8[i]);
-    }
-    const base64 = btoa(binary);
+    while (pcmBuffer.length >= CHUNK_SAMPLES) {
+      const chunk = pcmBuffer.slice(0, CHUNK_SAMPLES);
+      pcmBuffer = pcmBuffer.slice(CHUNK_SAMPLES);
 
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      try {
-        ws.send(JSON.stringify({
-          type: 'audio_chunk',
-          data: base64,
-        }));
-        chunksSent++;
-        lastChunkSize = e.data.size;
-        lastChunkTime = new Date().toISOString();
-        log('chunk SENT, total sent:', chunksSent, 'size:', e.data.size, 'base64_len:', base64.length);
-
-        if (chunksSent % 10 === 0) {
-          reportStatus('capturing', `Sent ${chunksSent} chunks`);
-        }
-      } catch (err) {
-        log('chunk send FAILED:', err.message);
-        reportStatus('error', 'Send failed: ' + err.message);
+      const int16 = new Int16Array(chunk.length);
+      for (let i = 0; i < chunk.length; i++) {
+        const s = Math.max(-1, Math.min(1, chunk[i]));
+        int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
       }
-    } else {
-      log('WebSocket not open, readyState=', ws ? ws.readyState : 'null');
+
+      const uint8 = new Uint8Array(int16.buffer);
+      let binary = '';
+      for (let i = 0; i < uint8.length; i++) {
+        binary += String.fromCharCode(uint8[i]);
+      }
+      const base64 = btoa(binary);
+
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify({
+            type: 'audio_chunk',
+            format: 'pcm_s16le',
+            sample_rate: audioContext.sampleRate,
+            channels: 1,
+            timestamp_ms: Date.now(),
+            data: base64,
+          }));
+          chunksSent++;
+          lastChunkSize = int16.byteLength;
+          lastChunkTime = new Date().toISOString();
+          log('PCM chunk SENT, total:', chunksSent, 'samples:', chunk.length, 'bytes:', int16.byteLength, 'sr:', audioContext.sampleRate);
+
+          if (chunksSent % 5 === 0) {
+            reportStatus('capturing', `Sent ${chunksSent} PCM chunks`);
+          }
+        } catch (err) {
+          log('chunk send FAILED:', err.message);
+          reportStatus('error', 'Send failed: ' + err.message);
+        }
+      } else {
+        log('WebSocket not open, readyState=', ws ? ws.readyState : 'null');
+      }
     }
   };
 
-  mediaRecorder.onerror = (e) => {
-    log('MediaRecorder ERROR:', e.error?.message || e.error || 'unknown');
-    reportStatus('error', 'MediaRecorder error: ' + (e.error?.message || 'unknown'));
-  };
+  sourceNode.connect(scriptNode);
+  scriptNode.connect(audioContext.destination);
 
-  mediaRecorder.onstop = () => {
-    log('MediaRecorder STOPPED');
-  };
-
-  mediaRecorder.start(1000);
   recording = true;
   chunksSent = 0;
-  log('MediaRecorder STARTED, timeslice=1000ms');
-  reportStatus('capturing', 'Recording started');
+  pcmBuffer = new Float32Array(0);
+  log('AudioContext + ScriptProcessorNode STARTED, sampleRate:', audioContext.sampleRate);
+  reportStatus('capturing', 'PCM recording started (sr=' + audioContext.sampleRate + ')');
 }
 
-function stopMediaRecorder() {
-  if (mediaRecorder && mediaRecorder.state === 'recording') {
-    log('stopping MediaRecorder...');
-    try { mediaRecorder.stop(); } catch (e) { log('stop error:', e.message); }
+function stopMediaCapture() {
+  if (scriptNode) {
+    try { scriptNode.disconnect(); } catch (e) { log('scriptNode disconnect error:', e.message); }
+    scriptNode = null;
   }
-  mediaRecorder = null;
-
-  if (audioStream) {
-    log('stopping audio tracks...');
-    audioStream.getTracks().forEach(t => {
+  if (sourceNode) {
+    try { sourceNode.disconnect(); } catch (e) { log('sourceNode disconnect error:', e.message); }
+    sourceNode = null;
+  }
+  if (audioContext) {
+    try { audioContext.close(); } catch (e) { log('audioContext close error:', e.message); }
+    audioContext = null;
+  }
+  if (mediaStream) {
+    log('stopping media tracks...');
+    mediaStream.getTracks().forEach(t => {
       try { t.stop(); } catch (e) { log('track stop error:', e.message); }
     });
-    audioStream = null;
+    mediaStream = null;
   }
+  pcmBuffer = new Float32Array(0);
 }
 
 function stopRecording() {
-  if (!recording && !mediaRecorder) {
+  if (!recording && !scriptNode) {
     log('not recording, nothing to stop');
     return;
   }
 
   log('STOP_RECORDING');
 
-  stopMediaRecorder();
+  stopMediaCapture();
 
   if (ws) {
     log('sending stop to backend ws...');
@@ -243,5 +265,5 @@ function stopRecording() {
   }
 
   recording = false;
-  reportStatus('stopped', 'Capture stopped. Sent ' + chunksSent + ' chunks total.');
+  reportStatus('stopped', 'Capture stopped. Sent ' + chunksSent + ' PCM chunks total.');
 }

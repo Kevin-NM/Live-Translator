@@ -208,3 +208,7 @@ class LiveStatusResponse(BaseModel):
     chunks_received: int = 0
     last_decode_status: str = "pending"
     last_error: str = ""
+    last_format: str = ""
+    last_sample_rate: int = 0
+    last_channels: int = 0
+    pcm_duration_buffered: float = 0.0

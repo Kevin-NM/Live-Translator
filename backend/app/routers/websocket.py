@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, field
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.services.ws_manager import ws_manager
-from app.services.audio_pipeline import audio_pipeline, check_ffmpeg
+from app.services.audio_pipeline import audio_pipeline
 from app.services.asr_service import transcribe_audio, get_model_info
 from app.services.translation_pipeline import translation_pipeline, TranslationJob
 from app.database import SessionLocal
@@ -25,6 +25,10 @@ class LiveSessionStats:
     last_decode_status: str = "pending"
     last_error: str = ""
     session_active: bool = True
+    last_format: str = ""
+    last_sample_rate: int = 0
+    last_channels: int = 0
+    pcm_duration_buffered: float = 0.0
 
 
 _live_stats: dict[int, LiveSessionStats] = {}
@@ -78,7 +82,15 @@ async def ws_audio(ws: WebSocket, session_id: int):
 
             if msg_type == "audio_chunk":
                 b64_data = msg.get("data", "")
-                logger.info(f"received audio_chunk, base64 length={len(b64_data)}")
+                fmt = msg.get("format", "pcm_s16le")
+                source_rate = msg.get("sample_rate", 48000)
+                channels = msg.get("channels", 1)
+                timestamp_ms = msg.get("timestamp_ms", 0)
+
+                logger.info(
+                    f"received audio_chunk: format={fmt} sample_rate={source_rate} "
+                    f"channels={channels} base64_length={len(b64_data)}"
+                )
 
                 try:
                     audio_bytes = base64.b64decode(b64_data)
@@ -92,10 +104,30 @@ async def ws_audio(ws: WebSocket, session_id: int):
                 stats.chunks_received += 1
                 stats.last_audio_chunk_at = time.time()
                 stats.last_audio_chunk_bytes = len(audio_bytes)
+                stats.last_format = fmt
+                stats.last_sample_rate = source_rate
+                stats.last_channels = channels
 
-                chunk = await audio_pipeline.process_chunk(session_id, audio_bytes)
+                if fmt == "pcm_s16le":
+                    chunk = await audio_pipeline.process_pcm_s16le(
+                        session_id, audio_bytes, source_rate, channels
+                    )
+                elif fmt == "pcm_f32le":
+                    chunk = await audio_pipeline.process_pcm_f32le(
+                        session_id, audio_bytes, source_rate, channels
+                    )
+                else:
+                    logger.warning(f"Unknown audio format: {fmt}")
+                    stats.last_error = f"Unknown format: {fmt}"
+                    stats.last_decode_status = "error"
+                    continue
+
+                buf_info = audio_pipeline.get_buffer_info(session_id)
+                stats.pcm_duration_buffered = buf_info.get("buffered_seconds", 0)
+                logger.info(f"Buffer: {buf_info}")
+
                 if chunk is None:
-                    logger.debug("audio_pipeline.process_chunk returned None (buffering)")
+                    logger.debug("audio_pipeline returned None (buffering)")
                     stats.last_decode_status = "buffering"
                     continue
 

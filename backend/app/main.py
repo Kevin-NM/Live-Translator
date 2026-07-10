@@ -54,4 +54,6 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
+    from app.translator import close_http_client
     await translation_pipeline.stop()
+    await close_http_client()

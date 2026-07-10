@@ -137,6 +137,13 @@ async function handleStartCapture(sessionId, tabId, backendUrl) {
   await new Promise(resolve => setTimeout(resolve, 200));
 
   const captureId = 'cap_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+  const httpBase = (backendUrl || 'ws://127.0.0.1:8787').replace(/^ws/, 'http').replace(/\/ws\/audio\/.*$/, '');
+  const startResponse = await fetch(`${httpBase}/api/sessions/${sessionId}/live/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ capture_id: captureId }),
+  });
+  if (!startResponse.ok) throw new Error('Backend could not start the live pipeline');
   console.log('[BG] sending START_RECORDING to offscreen, captureId=', captureId);
   const storedPm = await chrome.storage.local.get('playbackMode');
   const pm = storedPm.playbackMode || 'audioElement';

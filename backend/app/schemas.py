@@ -59,6 +59,17 @@ class TranslationTestRequest(BaseModel):
     source_language: Optional[str] = "ja"
 
 
+class TranslationCompareRequest(BaseModel):
+    provider_id: int
+    source_text: str = "ありがとうございます"
+    source_language: str = "ja"
+    target_language: str = "zh-TW"
+
+
+class LiveStartRequest(BaseModel):
+    capture_id: Optional[str] = None
+
+
 class InjectTextRequest(BaseModel):
     source_language: str = "ja"
     source_text: str = Field(..., min_length=1)
@@ -188,7 +199,7 @@ class SettingsRead(BaseModel):
     asr_model: str = "small"
     device: str = "auto"
     compute_type: str = "int8_float16"
-    chunk_seconds: int = 3
+    chunk_seconds: int = 2
     source_language: str = "ja"
 
 
@@ -215,6 +226,8 @@ class LiveStatusResponse(BaseModel):
     session_status: str = "unknown"
     audio_ws_connected: bool = False
     audio_status: str = "idle"
+    started_at: Optional[float] = None
+    startup_grace_until: Optional[float] = None
     capture_id: Optional[str] = None
     last_audio_chunk_at: Optional[float] = None
     last_audio_chunk_bytes: int = 0

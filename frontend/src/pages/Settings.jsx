@@ -6,7 +6,7 @@ export default function Settings() {
   const { t } = useI18n()
   const [settings, setSettings] = useState({
     asr_model: 'small', device: 'auto', compute_type: 'int8_float16',
-    chunk_seconds: 3, source_language: 'ja',
+    chunk_seconds: 2, source_language: 'ja',
   })
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')

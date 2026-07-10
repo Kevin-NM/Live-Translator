@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 from fastapi import APIRouter, Depends, HTTPException
@@ -45,6 +46,7 @@ async def translation_test(data: schemas.TranslationTestRequest, db: DbSession =
         source_text=source_text,
         source_language=source_language,
         mode="realtime",
+        route="provider_test",
     )
 
     return schemas.TranslationTestResponse(
@@ -74,7 +76,8 @@ async def create_chrome_tab_session(data: schemas.ChromeTabSessionCreate, db: Db
 
 
 @router.post("/api/sessions/{session_id}/live/start", response_model=schemas.LiveStartResponse)
-async def live_start(session_id: int, db: DbSession = Depends(get_db)):
+async def live_start(session_id: int, data: schemas.LiveStartRequest | None = None, db: DbSession = Depends(get_db)):
+    from app.routers.websocket import start_live_stats
     session = crud.get_session(db, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -89,6 +92,7 @@ async def live_start(session_id: int, db: DbSession = Depends(get_db)):
             sample_rate=16000,
         )
         await translation_pipeline.start()
+        start_live_stats(session_id, data.capture_id if data else "")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start pipeline: {e}")
 
@@ -101,14 +105,18 @@ async def live_start(session_id: int, db: DbSession = Depends(get_db)):
 
 @router.post("/api/sessions/{session_id}/live/stop", response_model=schemas.LiveStopResponse)
 async def live_stop(session_id: int, db: DbSession = Depends(get_db)):
-    from app.routers.websocket import reset_live_stats
+    from app.routers.websocket import get_live_stats
     session = crud.get_session(db, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
     crud.stop_session(db, session_id)
     audio_pipeline.remove_buffer(session_id)
-    reset_live_stats(session_id)
+    stats = get_live_stats(session_id)
+    stats.audio_ws_connected = False
+    stats.audio_status = "stopped"
+    stats.last_decode_status = "stopped"
+    stats.pcm_duration_buffered = 0
 
     await ws_manager.broadcast_live(session_id, {
         "type": "status",
@@ -144,16 +152,20 @@ async def live_status(session_id: int, db: DbSession = Depends(get_db)):
     session_status = session.status if session else "unknown"
 
     now = time.time()
-    is_stale = False
-    if stats.audio_status == "disconnected" and stats.last_disconnect_time > 0:
-        if now - stats.last_disconnect_time > STALE_THRESHOLD:
-            is_stale = True
+    in_startup_grace = stats.startup_grace_until > now and stats.chunks_received == 0
+    if stats.audio_status in ("starting", "connecting") and not in_startup_grace and stats.chunks_received == 0:
+        stats.audio_status = "disconnected"
+        stats.last_decode_status = "disconnected"
+        stats.last_error = "Extension audio did not connect within 10 seconds"
+    is_stale = stats.audio_status == "disconnected" and not in_startup_grace
 
     return schemas.LiveStatusResponse(
         session_id=session_id,
         session_status=session_status,
         audio_ws_connected=stats.audio_ws_connected,
         audio_status=stats.audio_status,
+        started_at=stats.started_at or None,
+        startup_grace_until=stats.startup_grace_until or None,
         capture_id=stats.capture_id or None,
         last_audio_chunk_at=stats.last_audio_chunk_at if stats.last_audio_chunk_at > 0 else None,
         last_audio_chunk_bytes=stats.last_audio_chunk_bytes,
@@ -217,10 +229,42 @@ async def inject_text(session_id: int, data: schemas.InjectTextRequest, db: DbSe
         source_text=data.source_text.strip(),
         source_language=data.source_language,
         mode="realtime",
+        route="inject",
     ))
 
     return {"session_id": session_id, "segment_id": segment.id, "status": "queued"}
 
+
+@router.get("/api/debug/translation-contracts")
+async def translation_contracts(session_id: int | None = None, limit: int = 20):
+    from app.translator import get_translation_contracts
+    return get_translation_contracts(session_id=session_id, limit=limit)
+
+
+@router.post("/api/debug/translation-compare")
+async def translation_compare(data: schemas.TranslationCompareRequest, db: DbSession = Depends(get_db)):
+    from app import translator as translator_mod
+    from app.services.translation_pipeline import inspect_target_language
+    provider = crud.get_provider(db, data.provider_id)
+    if not provider or not provider.enabled:
+        raise HTTPException(status_code=404, detail="Enabled provider not found")
+    cases = [(route, None) for route in ("provider_test", "manual", "inject", "live")]
+    cases += [("compare", variant) for variant in ("chat_prompt", "minimal_prompt", "zh_direct_prompt")]
+    results = await asyncio.gather(*[
+        translator_mod.translate_text(
+            provider, data.source_text, data.source_language, target_language=data.target_language,
+            route=route, prompt_variant=variant,
+        ) for route, variant in cases
+    ])
+    response = []
+    for (route, variant), result in zip(cases, results):
+        detector = inspect_target_language(result.translated_text, data.target_language, data.source_text)
+        if result.contract is not None:
+            result.contract["wrong_target_language"] = detector
+            if detector["is_wrong"] and result.status == "completed":
+                result.contract["final_status"] = "rejected"
+        response.append({"route": route, "variant": variant or result.contract.get("prompt_builder"), **(result.contract or {}), "wrong_target_language": detector})
+    return response
 
 @router.post("/api/sessions/{session_id}/segments/recover")
 async def recover_segments(session_id: int, db: DbSession = Depends(get_db)):

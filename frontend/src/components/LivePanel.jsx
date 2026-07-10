@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { injectLiveText, recoverSegments } from '../api'
+import { getSegments, injectLiveText, recoverSegments } from '../api'
 import { useI18n } from '../i18n'
 
 export default function LivePanel({ sessionId, sessionStatus }) {
@@ -22,6 +22,14 @@ export default function LivePanel({ sessionId, sessionStatus }) {
   const clearSegments = () => {
     segmentsRef.current = []
     setLiveSegments([])
+  }
+
+  const refreshSegments = async () => {
+    try {
+      const res = await getSegments(sessionId)
+      segmentsRef.current = res.data
+      if (mountedRef.current) setLiveSegments(res.data)
+    } catch {}
   }
 
   const handleWsMessage = (msg) => {
@@ -144,6 +152,7 @@ export default function LivePanel({ sessionId, sessionStatus }) {
     mountedRef.current = true
     reconnectAttemptRef.current = 0
     if (sessionStatus === 'active') connectWs()
+    refreshSegments()
     startStatusPolling()
     return cleanup
   }, [sessionId, sessionStatus])
@@ -166,6 +175,7 @@ export default function LivePanel({ sessionId, sessionStatus }) {
     try {
       const res = await recoverSegments(sessionId)
       console.log('[LivePanel] recover result:', res.data)
+      await refreshSegments()
     } catch (e) {
       console.error('[LivePanel] recover failed:', e)
     } finally {
@@ -176,6 +186,7 @@ export default function LivePanel({ sessionId, sessionStatus }) {
   const extConnected = backendStats?.audio_ws_connected || false
   const audioStatus = backendStats?.audio_status || 'idle'
   const isStale = backendStats?.is_stale || false
+  const isStarting = audioStatus === 'starting' || audioStatus === 'connecting'
   const chunksReceived = backendStats?.chunks_received || 0
   const lastChunkAt = backendStats?.last_audio_chunk_at
   const lastChunkBytes = backendStats?.last_audio_chunk_bytes || 0
@@ -225,6 +236,12 @@ export default function LivePanel({ sessionId, sessionStatus }) {
         </div>
       )}
 
+      {sessionStatus === 'active' && isStarting && (
+        <div className="bg-blue-900/30 border border-blue-700 rounded-lg p-3 text-sm text-blue-200">
+          Audio: starting... waiting for extension audio
+        </div>
+      )}
+
       {showStaleWarning && (
         <div className="bg-red-900/30 border border-red-700 rounded-lg p-3 text-sm text-red-200">
           Audio connection is stale (disconnected &gt; 30s). Please Stop Session and start a new one.
@@ -244,6 +261,7 @@ export default function LivePanel({ sessionId, sessionStatus }) {
           <span className={
             audioStatus === 'connected' ? 'text-green-400' :
             audioStatus === 'disconnected' ? (isStale ? 'text-red-400' : 'text-yellow-400') :
+            isStarting ? 'text-blue-400' :
             'text-gray-400'
           }>{audioStatus}{isStale ? ' (stale)' : ''}</span>
           <span className="text-gray-500">Capture ID</span>
@@ -332,7 +350,7 @@ export default function LivePanel({ sessionId, sessionStatus }) {
                 {seg.status === 'translated' && seg.translated_text
                   ? seg.translated_text
                   : seg.status === 'rejected'
-                    ? <span className="text-orange-400 text-sm">Output rejected (wrong target language)</span>
+                    ? <span className="text-orange-400 text-sm">Output rejected: {seg.error_message || 'wrong_target_language'}</span>
                     : seg.status === 'error'
                       ? <span className="text-red-400 text-sm">{seg.error_message || 'Translation error'}</span>
                       : seg.status === 'translating'
@@ -351,7 +369,9 @@ export default function LivePanel({ sessionId, sessionStatus }) {
         <div className="text-center text-gray-500 py-6 text-sm">
           {extConnected ? t('live.waiting_asr') :
            isStale ? 'Audio connection stale. Please restart.' :
-           audioStatus === 'disconnected' ? 'Audio disconnected. Re-start Capture.' :
+           isStarting ? 'Audio is starting. Waiting for extension audio...' :
+           audioStatus === 'stopped' ? 'Audio capture stopped.' :
+           audioStatus === 'disconnected' ? 'Extension audio did not connect. Press Start Capture again or Reset Capture.' :
            t('live.waiting_ext')}
         </div>
       )}

@@ -69,7 +69,7 @@ def create_session(db: DbSession, data: schemas.SessionCreate) -> models.Session
 def create_chrome_tab_session(db: DbSession, data: schemas.ChromeTabSessionCreate, provider_name: Optional[str] = None) -> models.Session:
     session = models.Session(
         title=data.title,
-        source_type="chrome_tab",
+        source_type="chrome_tab_audio",
         source_name=data.source_name or data.title,
         source_url=data.source_url,
         source_language=data.source_language,
@@ -180,7 +180,7 @@ def get_settings(db: DbSession) -> dict:
         "asr_model": "small",
         "device": "auto",
         "compute_type": "int8_float16",
-        "chunk_seconds": "3",
+        "chunk_seconds": "2",
         "source_language": "ja",
     }
     rows = db.query(models.Setting).all()

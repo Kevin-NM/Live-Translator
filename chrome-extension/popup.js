@@ -113,7 +113,7 @@ async function loadSessions() {
     if (!r.ok) return;
     const sessions = await r.json();
     el.sessionSelect.innerHTML = '';
-    const active = sessions.filter(s => s.status === 'active' && s.source_type === 'chrome_tab');
+    const active = sessions.filter(s => s.status === 'active' && ['chrome_tab', 'chrome_tab_audio'].includes(s.source_type));
     if (active.length === 0) {
       el.sessionSelect.innerHTML = '<option value="">No active Chrome sessions</option>';
     } else {

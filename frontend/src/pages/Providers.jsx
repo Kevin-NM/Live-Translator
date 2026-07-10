@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { getProviders, createProvider, updateProvider, deleteProvider, testProvider, translationTest } from '../api'
+import { getProviders, createProvider, updateProvider, deleteProvider, testProvider, translationTest, translationCompare } from '../api'
 import ProviderForm from '../components/ProviderForm'
 import { useI18n } from '../i18n'
 
@@ -19,6 +19,10 @@ export default function Providers() {
   const [testing, setTesting] = useState({})
   const [selfTesting, setSelfTesting] = useState({})
   const [errors, setErrors] = useState({})
+  const [compareProvider, setCompareProvider] = useState('')
+  const [compareText, setCompareText] = useState('ありがとうございます')
+  const [compareResults, setCompareResults] = useState([])
+  const [comparing, setComparing] = useState(false)
 
   const load = () => getProviders().then(r => setProviders(r.data)).catch(() => {})
   useEffect(() => { load() }, [])
@@ -73,6 +77,17 @@ export default function Providers() {
     }
   }
 
+  const handleCompare = async () => {
+    if (!compareProvider || !compareText.trim()) return
+    setComparing(true); setCompareResults([])
+    try {
+      const res = await translationCompare({ provider_id: Number(compareProvider), source_language: 'ja', target_language: 'zh-TW', source_text: compareText.trim() })
+      setCompareResults(res.data)
+    } catch (e) {
+      setErrors(v => ({ ...v, compare: e.response?.data?.detail || e.message }))
+    } finally { setComparing(false) }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
@@ -90,6 +105,32 @@ export default function Providers() {
           <ProviderForm initial={editing || EMPTY_PROVIDER} onSave={handleSave} onCancel={() => { setShowForm(false); setEditing(null) }} />
         </div>
       )}
+
+      <div className="bg-gray-800 rounded-xl p-5 border border-gray-700 space-y-3">
+        <div>
+          <h2 className="text-lg font-semibold">Translation Compare</h2>
+          <p className="text-xs text-gray-500">比較 provider_test / manual / inject / live 與三種 prompt adapter。測試會同時送出 7 筆請求。</p>
+        </div>
+        <div className="flex flex-col md:flex-row gap-2">
+          <select value={compareProvider} onChange={e => setCompareProvider(e.target.value)} className="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm">
+            <option value="">Select provider</option>
+            {providers.filter(p => p.enabled).map(p => <option key={p.id} value={p.id}>{p.provider_name} · {p.model}</option>)}
+          </select>
+          <input value={compareText} onChange={e => setCompareText(e.target.value)} className="flex-1 bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm" />
+          <button onClick={handleCompare} disabled={comparing || !compareProvider} className="bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded text-sm disabled:opacity-50">{comparing ? 'Comparing...' : 'Compare'}</button>
+        </div>
+        {errors.compare && <div className="text-red-400 text-sm">{String(errors.compare)}</div>}
+        {compareResults.length > 0 && <div className="space-y-2">
+          {compareResults.map((r, i) => <details key={i} className={`rounded border p-3 ${r.wrong_target_language?.is_wrong ? 'border-orange-700 bg-orange-900/20' : r.final_status === 'completed' ? 'border-green-700 bg-green-900/20' : 'border-red-700 bg-red-900/20'}`}>
+            <summary className="cursor-pointer text-sm"><b>{r.route}</b> · {r.variant} · {r.final_status}{r.wrong_target_language?.reason ? ` · ${r.wrong_target_language.reason}` : ''} · {r.latency_ms || 0}ms</summary>
+            <div className="mt-2 text-sm text-white">{r.normalized_output || r.error_message || '(empty)'}</div>
+            <div className="mt-2 grid md:grid-cols-2 gap-2 text-xs">
+              <pre className="bg-gray-950 p-2 rounded whitespace-pre-wrap overflow-auto">SYSTEM\n{r.system_prompt || '(none)'}</pre>
+              <pre className="bg-gray-950 p-2 rounded whitespace-pre-wrap overflow-auto">USER\n{r.user_prompt}</pre>
+            </div>
+          </details>)}
+        </div>}
+      </div>
 
       <div className="space-y-4">
         {providers.map(p => (

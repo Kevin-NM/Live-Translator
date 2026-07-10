@@ -3,6 +3,10 @@ from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Foreig
 from sqlalchemy.orm import relationship
 from app.database import Base
 
+# Reserved capture sources for future caption-first fallbacks. Only manual and
+# chrome_tab are implemented today; the others intentionally remain design stubs.
+SOURCE_TYPES = ("manual", "chrome_tab_audio", "youtube_caption_dom", "browser_speech_api", "windows_live_captions")
+
 
 class Session(Base):
     __tablename__ = "sessions"

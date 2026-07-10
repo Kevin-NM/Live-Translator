@@ -118,9 +118,11 @@ def transcribe_audio(
         segments_iter, info = model.transcribe(
             audio_data,
             language=lang,
-            beam_size=5,
+            beam_size=1,
+            best_of=1,
             vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=500, speech_pad_ms=200),
+            vad_parameters=dict(min_silence_duration_ms=300, speech_pad_ms=150),
+            condition_on_previous_text=False,
         )
 
         latency_ms = (time.monotonic() - start_time) * 1000

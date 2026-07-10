@@ -102,6 +102,9 @@ async def translate_in_session(
         source_text=data.source_text.strip(),
         source_language=source_lang,
         mode=data.mode,
+        target_language=session.target_language or "zh-TW",
+        route="manual",
+        session_id=session_id,
     )
 
     crud.update_segment_result(

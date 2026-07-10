@@ -34,9 +34,12 @@ class LiveSessionStats:
     last_channels: int = 0
     pcm_duration_buffered: float = 0.0
     capture_id: str = ""
+    started_at: float = 0.0
+    startup_grace_until: float = 0.0
 
 
 _live_stats: dict[int, LiveSessionStats] = {}
+_asr_locks: dict[int, asyncio.Lock] = {}
 
 
 def get_live_stats(session_id: int) -> LiveSessionStats:
@@ -53,6 +56,14 @@ def reset_live_stats(session_id: int):
     _live_stats[session_id] = LiveSessionStats()
 
 
+def start_live_stats(session_id: int, capture_id: str = ""):
+    now = time.time()
+    _live_stats[session_id] = LiveSessionStats(
+        audio_status="starting", last_decode_status="starting", capture_id=capture_id,
+        started_at=now, startup_grace_until=now + 10.0,
+    )
+
+
 @router.websocket("/ws/audio/{session_id}")
 async def ws_audio(ws: WebSocket, session_id: int):
     logger.info(f"Audio WS incoming connection: session={session_id}")
@@ -60,15 +71,18 @@ async def ws_audio(ws: WebSocket, session_id: int):
 
     stats = get_live_stats(session_id)
     stats.audio_ws_connected = True
-    stats.audio_status = "connected"
+    stats.audio_status = "connecting"
     stats.last_error = ""
-    stats.last_decode_status = "connected"
+    stats.last_decode_status = "buffering"
     logger.info(f"Audio WS connected: session={session_id}")
 
     settings = {}
     db = SessionLocal()
     try:
         settings = crud.get_settings(db)
+        session = crud.get_session(db, session_id)
+        if session and session.source_language:
+            settings["source_language"] = session.source_language
     finally:
         db.close()
 
@@ -109,6 +123,7 @@ async def ws_audio(ws: WebSocket, session_id: int):
                     continue
 
                 stats.chunks_received += 1
+                stats.audio_status = "connected"
                 stats.last_audio_chunk_at = time.time()
                 stats.last_audio_chunk_bytes = len(audio_bytes)
                 stats.last_format = fmt
@@ -140,6 +155,8 @@ async def ws_audio(ws: WebSocket, session_id: int):
 
             elif msg_type == "stop":
                 logger.info(f"Audio WS received stop command for session={session_id}")
+                stats.audio_status = "stopped"
+                stats.last_decode_status = "stopped"
                 chunk = await audio_pipeline.flush_session(session_id)
                 if chunk is not None and len(chunk) > 0:
                     asyncio.create_task(_process_asr_chunk(session_id, chunk, settings))
@@ -152,9 +169,10 @@ async def ws_audio(ws: WebSocket, session_id: int):
         stats.last_error = str(e)
     finally:
         stats.audio_ws_connected = False
-        stats.audio_status = "disconnected"
+        stopped_cleanly = stats.audio_status == "stopped"
+        stats.audio_status = "stopped" if stopped_cleanly else "disconnected"
         stats.last_disconnect_time = time.time()
-        stats.last_decode_status = "disconnected"
+        stats.last_decode_status = "stopped" if stopped_cleanly else "disconnected"
         stats.pcm_duration_buffered = 0
         ws_manager.disconnect_audio(session_id)
         audio_pipeline.remove_buffer(session_id)
@@ -163,14 +181,22 @@ async def ws_audio(ws: WebSocket, session_id: int):
 
 async def _process_asr_chunk(session_id: int, chunk, settings: dict):
     try:
-        results = transcribe_audio(
-            audio_data=chunk,
-            sample_rate=16000,
-            language=settings.get("source_language", "ja"),
-            model_size=settings.get("asr_model", "small"),
-            device=settings.get("device", "auto"),
-            compute_type=settings.get("compute_type", "int8_float16"),
-        )
+        # Whisper is synchronous. Run it off the event loop and serialize each
+        # session to avoid overlapping GPU inference when chunks arrive quickly.
+        lock = _asr_locks.setdefault(session_id, asyncio.Lock())
+        if lock.locked():
+            logger.warning("ASR still busy; dropping stale chunk for session=%s to preserve realtime latency", session_id)
+            return
+        async with lock:
+            results = await asyncio.to_thread(
+                transcribe_audio,
+                audio_data=chunk,
+                sample_rate=16000,
+                language=settings.get("source_language", "ja"),
+                model_size=settings.get("asr_model", "small"),
+                device=settings.get("device", "auto"),
+                compute_type=settings.get("compute_type", "int8_float16"),
+            )
 
         if not results:
             return

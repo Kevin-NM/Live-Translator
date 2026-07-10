@@ -18,6 +18,7 @@ class TranslationJob:
     source_text: str
     source_language: str
     mode: str = "realtime"
+    route: str = "live"
 
 
 @dataclass
@@ -32,23 +33,29 @@ class TranslationJobResult:
     error_message: Optional[str] = None
 
 
-def _is_wrong_target_language(text: str, target_language: str) -> bool:
-    if not text or target_language != "zh-TW":
-        return False
-    text = text.strip()
+def inspect_target_language(text: str, target_language: str, source_text: str = "") -> dict:
+    debug = {"is_wrong": False, "reason": None, "latin_ratio": 0.0, "cjk_ratio": 0.0, "contains_prompt_echo": False}
+    if target_language != "zh-TW":
+        return debug
+    text = (text or "").strip()
     if not text:
-        return False
-    has_cjk = bool(re.search(r'[\u4e00-\u9fff]', text))
-    has_ascii_words = len(re.findall(r'[a-zA-Z]{3,}', text)) > 2
-    if has_ascii_words and not has_cjk:
-        return True
-    if text.lower().startswith(('translate', 'translation', '翻譯', '譯文')):
-        return True
-    if text.startswith('{') or text.startswith('['):
-        return True
-    if len(text) > 10 and not has_cjk:
-        return True
-    return False
+        debug.update(is_wrong=True, reason="empty")
+        return debug
+    meaningful = re.findall(r'[A-Za-z\u3040-\u30ff\u4e00-\u9fff]', text)
+    total = max(1, len(meaningful))
+    debug["latin_ratio"] = round(len(re.findall(r'[A-Za-z]', text)) / total, 3)
+    debug["cjk_ratio"] = round(len(re.findall(r'[\u4e00-\u9fff]', text)) / total, 3)
+    lowered = text.lower()
+    debug["contains_prompt_echo"] = lowered.startswith(('translate', 'translation', '請翻譯', '將以下', '日文翻成', '英文翻成'))
+    if debug["contains_prompt_echo"] or text.startswith(('{', '[')):
+        debug.update(is_wrong=True, reason="prompt_echo")
+    elif debug["latin_ratio"] > 0.65 and debug["cjk_ratio"] < 0.15:
+        debug.update(is_wrong=True, reason="mostly_latin")
+    elif re.search(r'[\u3040-\u30ff]', text) and debug["cjk_ratio"] < 0.25:
+        debug.update(is_wrong=True, reason="contains_source_japanese")
+    elif len(text) > 10 and debug["cjk_ratio"] == 0:
+        debug.update(is_wrong=True, reason="mixed_language")
+    return debug
 
 
 class TranslationPipeline:
@@ -248,9 +255,12 @@ class TranslationPipeline:
                 source_language=job.source_language,
                 mode=job.mode,
                 target_language=target_language,
+                route=job.route,
+                session_id=job.session_id,
             )
 
-            if result.status == "completed" and _is_wrong_target_language(result.translated_text, target_language):
+            language_debug = inspect_target_language(result.translated_text, target_language, job.source_text)
+            if result.status == "completed" and language_debug["is_wrong"]:
                 logger.warning(
                     f"Translation rejected: wrong target language. "
                     f"segment={job.segment_id} target={target_language} "
@@ -260,13 +270,13 @@ class TranslationPipeline:
                     db, job.segment_id,
                     translated_text="", provider_name=result.provider_name,
                     model=result.model, latency_ms=result.latency_ms,
-                    status="rejected", error_message="wrong_target_language",
+                    status="rejected", error_message=language_debug["reason"],
                 )
                 return TranslationJobResult(
                     session_id=job.session_id, segment_id=job.segment_id,
                     translated_text="", provider_name=result.provider_name,
                     model=result.model, latency_ms=result.latency_ms,
-                    status="rejected", error_message="wrong_target_language",
+                    status="rejected", error_message=language_debug["reason"],
                 )
 
             status = "translated" if result.status == "completed" else "error"

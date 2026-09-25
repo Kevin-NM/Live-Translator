@@ -66,8 +66,38 @@ class TranslationSettingsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "模型或 API 網址無效.*HTTP 410"):
                 asyncio.run(translate("こんにちは", "ja-zh", config))
 
+    def test_english_result_is_retried_in_traditional_chinese(self):
+        calls = []
+
+        def handler(request):
+            calls.append(json.loads(request.content))
+            output = "Air purifier" if len(calls) == 1 else "空氣清淨機"
+            return httpx.Response(200, json={"choices": [{"message": {"content": output}}]})
+
+        real_client = httpx.AsyncClient
+        with patch("app.translation.httpx.AsyncClient", side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(handler))):
+            config = TranslationConfig.from_payload({"provider": "nvidia", "api_key": "test-key"})
+            result = asyncio.run(translate("空気清浄機", "ja-zh", config))
+        self.assertEqual(result, "空氣清淨機")
+        self.assertEqual(len(calls), 2)
+
 
 class AudioSocketTests(unittest.TestCase):
+    def test_caption_timestamps_include_silence_before_voice(self):
+        silence = (np.zeros(3200, dtype="<i2")).tobytes()
+        voice = (np.full(3200, 9000, dtype="<i2")).tobytes()
+        with patch("app.main.get_model", return_value=object()), patch("app.main.transcribe_pcm", return_value="こんにちは"):
+            with TestClient(app).websocket_connect("/ws/audio") as ws:
+                ws.send_json({"translation": {"provider": "none"}})
+                ws.receive_json(); ws.receive_json()
+                for _ in range(2): ws.send_bytes(silence)
+                for _ in range(4): ws.send_bytes(voice)
+                partial = ws.receive_json()
+                self.assertEqual((partial["start_ms"], partial["end_ms"]), (400, 1200))
+                ws.send_json({"type": "eos"})
+                final = ws.receive_json()
+                self.assertEqual((final["start_ms"], final["end_ms"]), (400, 1200))
+
     def test_extension_origin_can_connect(self):
         with patch("app.main.get_model", return_value=object()):
             with TestClient(app).websocket_connect("/ws/audio", headers={"origin": "chrome-extension://test-extension"}) as ws:
@@ -86,11 +116,12 @@ class AudioSocketTests(unittest.TestCase):
                 for _ in range(6):
                     ws.send_bytes(packet)
                 partial = ws.receive_json()
-                self.assertEqual(partial, {"type": "partial", "text": "こんにちは"})
+                self.assertEqual(partial, {"type": "partial", "text": "こんにちは", "start_ms": 0, "end_ms": 800})
                 ws.send_json({"type": "eos"})
                 final = ws.receive_json()
                 self.assertEqual(final["type"], "final")
                 self.assertEqual(final["text"], "こんにちは")
+                self.assertEqual((final["start_ms"], final["end_ms"]), (0, 1200))
 
 
 if __name__ == "__main__":

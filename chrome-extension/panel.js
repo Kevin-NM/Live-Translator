@@ -31,7 +31,7 @@ function config() {
 }
 
 async function save() {
-  await chrome.storage.local.set({translation: config(), style: $('style').value});
+  await chrome.storage.local.set({translation: config(), style: $('style').value, delayMs: Number($('delay-ms').value)});
   $('settings-result').textContent = '已儲存到這台電腦的 Chrome。';
   $('settings-result').classList.remove('error');
 }
@@ -44,6 +44,7 @@ function showEvent(event) {
     $('stop').disabled = event.state === 'stopped';
     if (event.error) page('settings');
   } else if (event.type === 'status') $('capture-status').textContent = event.message;
+  else if (event.type === 'capture_started') $('capture-status').textContent = event.delay_ms ? `畫面與聲音緩衝 ${event.delay_ms / 1000} 秒中…` : '正在擷取分頁音訊…';
   else if (event.type === 'ready') showEvent({type: 'state', state: 'running'});
   else if (event.type === 'partial') $('partial').textContent = event.text;
   else if (event.type === 'final') {
@@ -110,13 +111,14 @@ $('translate-outgoing').addEventListener('click', () => translateText('outgoing'
 $('copy-outgoing').addEventListener('click', () => navigator.clipboard.writeText($('outgoing-result').textContent));
 
 (async () => {
-  const saved = await chrome.storage.local.get(['translation', 'style']);
+  const saved = await chrome.storage.local.get(['translation', 'style', 'delayMs']);
   const translation = saved.translation || {provider: 'nvidia'};
   $('provider').value = translation.provider || 'nvidia';
   $('endpoint').value = translation.endpoint || defaults[translation.provider]?.endpoint || '';
   $('model').value = translation.model || defaults[translation.provider]?.model || '';
   $('api-key').value = translation.api_key || '';
   $('style').value = saved.style || '';
+  $('delay-ms').value = String(saved.delayMs ?? 2000);
   providerChanged(false);
   const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
   currentTabId = tab?.id || null;

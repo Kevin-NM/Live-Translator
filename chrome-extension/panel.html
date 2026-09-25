@@ -16,6 +16,7 @@
     </section>
     <section id="settings" class="page">
       <h1>翻譯設定</h1><p>設定會保存在這台電腦的 Chrome 擴充功能儲存空間。</p>
+      <label for="delay-ms">觀看延遲</label><select id="delay-ms"><option value="0">不延遲</option><option value="2000">2 秒（較接近直播）</option><option value="4000">4 秒（譯文較有機會提早完成）</option><option value="6000">6 秒（較完整）</option></select><p class="hint">延後你看到的影片與聽到的聲音；變更後請重新開始擷取。受保護影片或高負載時可能無法穩定延後畫面。</p>
       <label for="provider">服務</label><select id="provider"><option value="nvidia">NVIDIA Build</option><option value="openai">OpenAI v1 Chat Completions</option><option value="custom">自訂相容 API</option><option value="none">只顯示日文</option></select>
       <label for="model">模型名稱</label><input id="model" spellcheck="false">
       <div id="endpoint-field"><label for="endpoint">API 網址（完整 /chat/completions）</label><input id="endpoint" spellcheck="false"></div>

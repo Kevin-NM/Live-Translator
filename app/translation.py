@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -45,7 +46,11 @@ async def translate(text: str, direction: str, config: TranslationConfig, style:
     if config.provider == "none":
         raise ValueError("請先選擇翻譯服務")
     if direction == "ja-zh":
-        instruction = "將日文翻譯成自然、準確的繁體中文（台灣）。保留人名、遊戲名和語氣。只輸出譯文。"
+        instruction = (
+            "Translate the Japanese source into Traditional Chinese used in Taiwan (zh-TW). "
+            "The entire answer must be in Traditional Chinese, never English. Preserve names, titles and tone. "
+            "Output only the translation. Examples: おめでとう！ → 恭喜！; 空気清浄機 → 空氣清淨機。"
+        )
     elif direction == "zh-ja":
         instruction = "將繁體中文改寫成自然的日文直播聊天室留言。準確保留原意，不憑空加入笑聲或 emoji。只輸出日文。"
         if style.strip():
@@ -63,8 +68,8 @@ async def translate(text: str, direction: str, config: TranslationConfig, style:
         "messages": messages,
         "stream": False,
     }
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(config.endpoint, headers=headers, json=payload)
+    async def request(client: httpx.AsyncClient, body: dict) -> str:
+        response = await client.post(config.endpoint, headers=headers, json=body)
         if response.is_error:
             try:
                 body = response.json()
@@ -78,7 +83,22 @@ async def translate(text: str, direction: str, config: TranslationConfig, style:
                 raise ValueError(f"模型或 API 網址無效（HTTP {response.status_code}）。請確認目前可用的模型名稱。{detail}")
             raise ValueError(f"翻譯服務回應 HTTP {response.status_code}：{detail or response.reason_phrase}")
         data = response.json()
-    content = data["choices"][0]["message"]["content"]
-    if not isinstance(content, str) or not content.strip():
-        raise ValueError("翻譯 API 沒有回傳文字")
-    return content.strip()
+        content = data["choices"][0]["message"]["content"]
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("翻譯 API 沒有回傳文字")
+        return content.strip()
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        content = await request(client, payload)
+        if direction == "ja-zh" and len(content) >= 8 and re.search(r"[A-Za-z]", content) and not re.search(r"[\u4e00-\u9fff]", content):
+            correction = (
+                f"The previous answer was in English: {content[:500]}\n"
+                "Rewrite the Japanese source into Traditional Chinese (Taiwan), using Chinese characters. "
+                f"Output only Chinese. Japanese source: {text[:4000]}"
+            )
+            payload["messages"] = ([{"role": "user", "content": correction}] if config.provider == "nvidia" else
+                                   [{"role": "system", "content": instruction}, {"role": "user", "content": correction}])
+            content = await request(client, payload)
+            if len(content) >= 8 and re.search(r"[A-Za-z]", content) and not re.search(r"[\u4e00-\u9fff]", content):
+                raise ValueError("翻譯服務未輸出繁體中文，請更換模型或調整設定")
+    return content

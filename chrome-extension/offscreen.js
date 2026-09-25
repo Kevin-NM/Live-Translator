@@ -38,13 +38,18 @@ async function start(message) {
     active.context = new AudioContext();
     await active.context.audioWorklet.addModule('audio-worklet.js');
     active.source = active.context.createMediaStreamSource(active.stream);
-    // tabCapture otherwise mutes the captured tab for the viewer.
-    active.source.connect(active.context.destination);
+    // tabCapture mutes the tab. The STT branch stays immediate; only listening is delayed.
+    if (message.delayMs > 0) {
+      active.delay = active.context.createDelay(8);
+      active.delay.delayTime.value = message.delayMs / 1000;
+      active.source.connect(active.delay).connect(active.context.destination);
+    } else active.source.connect(active.context.destination);
     active.processor = new AudioWorkletNode(active.context, 'pcm-downsampler');
     const silent = active.context.createGain();
     silent.gain.value = 0;
     active.source.connect(active.processor).connect(silent).connect(active.context.destination);
     await active.context.resume();
+    emit(active.id, {type: 'capture_started', delay_ms: message.delayMs});
     active.socket = new WebSocket('ws://127.0.0.1:8788/ws/audio');
     active.socket.binaryType = 'arraybuffer';
     active.socket.onopen = () => active.socket.send(JSON.stringify({translation: message.translation}));
@@ -60,6 +65,10 @@ async function start(message) {
     active.socket.onclose = () => { active.stopping = false; release(active); };
     active.processor.port.onmessage = event => {
       if (active.ready && !active.closed && active.socket?.readyState === WebSocket.OPEN && active.socket.bufferedAmount < 256000) {
+        if (!active.clockSent) {
+          active.clockSent = true;
+          emit(active.id, {type: 'audio_clock', start_epoch_ms: Date.now() - 200});
+        }
         active.socket.send(event.data);
       }
     };

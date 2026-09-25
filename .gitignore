@@ -1,45 +1,6 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
 .venv/
-venv/
-env/
-.pytest_cache/
-
-# Node / Frontend
-node_modules/
-dist/
-build/
-.vite/
-
-# Environment / secrets
+.tmp/
+models/
+__pycache__/
+*.py[cod]
 .env
-.env.*
-*.key
-*.pem
-*.crt
-
-# Local database / runtime data
-backend/data/*.db
-backend/data/*.sqlite
-backend/data/*.sqlite3
-backend/data/*.db-shm
-backend/data/*.db-wal
-backend/data/*.bak
-backend/*.db
-backend/*.sqlite
-backend/*.sqlite3
-backend/*.db-shm
-backend/*.db-wal
-
-# Logs
-*.log
-logs/
-
-# OS / IDE
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Live Translator</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main>
+    <header><div><p class="eyebrow">LOCAL LIVE TRANSLATOR</p><h1>聽懂直播，也能開口留言。</h1></div><span id="model-state" class="badge">檢查模型中</span></header>
+    <section class="settings">
+      <div class="section-title"><h2>翻譯 API</h2><span>語音辨識在本機執行</span></div>
+      <div class="fields">
+        <label>服務<select id="provider"><option value="nvidia">NVIDIA Build</option><option value="openai">OpenAI Chat Completions</option><option value="custom">自訂 OpenAI 相容 API</option><option value="none">只顯示日文</option></select></label>
+        <label>模型名稱<input id="model" autocomplete="off"></label>
+        <label id="endpoint-label" class="wide">API 網址<input id="endpoint" autocomplete="off" spellcheck="false"></label>
+        <label class="wide">API Key <small>只保留在此分頁記憶體，不寫入磁碟</small><input id="api-key" type="password" autocomplete="off" placeholder="貼上你的 API Key"></label>
+      </div>
+    </section>
+    <section class="live">
+      <div class="section-title"><h2>即時字幕</h2><span id="capture-status">尚未開始</span></div>
+      <p class="hint">按下開始後，選取要看的 Chrome 分頁，並勾選「分享分頁音訊」。</p>
+      <div class="actions"><button id="start" class="primary">開始擷取分頁音訊</button><button id="stop" disabled>停止</button><button id="clear">清除字幕</button></div>
+      <div id="captions" class="captions" aria-live="polite"><p class="empty">字幕會顯示在這裡。</p></div>
+      <p id="partial" class="partial"></p>
+    </section>
+    <div class="two-col">
+      <section><div class="section-title"><h2>看懂留言</h2><span>日文 → 繁中</span></div><textarea id="incoming" rows="3" placeholder="貼上日文留言"></textarea><button id="translate-incoming">翻譯留言</button><output id="incoming-result"></output></section>
+      <section><div class="section-title"><h2>寫日文留言</h2><span>繁中 → 日文</span></div><textarea id="outgoing" rows="3" placeholder="輸入想說的中文"></textarea><label class="style-label">我的留言習慣<textarea id="style" rows="2" placeholder="例如：短句、自然口語，少用 emoji，不要過度敬語"></textarea></label><div class="actions"><button id="translate-outgoing">翻成日文</button><button id="copy-outgoing" disabled>複製日文</button></div><output id="outgoing-result"></output></section>
+    </div>
+  </main>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

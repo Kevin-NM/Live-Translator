@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Live Translator</title><link rel="stylesheet" href="panel.css"></head>
+<body>
+  <header><div><strong>Live Translator</strong><small>日文直播助手</small></div><span id="model-state">檢查本機服務中…</span></header>
+  <nav aria-label="功能"><button class="selected" data-page="live">字幕</button><button data-page="chat">留言</button><button data-page="settings">設定</button></nav>
+  <main>
+    <section id="live" class="page active">
+      <div class="hero"><h1>影片上的即時字幕</h1><p>在 YouTube 分頁啟動後，日文與繁中會顯示在影片上。</p><div id="capture-status" role="status">已停止</div></div>
+      <div class="actions"><button id="start" class="primary">開始擷取目前分頁</button><button id="stop" disabled>停止</button></div>
+      <h2>字幕紀錄</h2><p id="partial" class="partial"></p><div id="captions" class="captions"><p class="muted">等待字幕…</p></div>
+    </section>
+    <section id="chat" class="page">
+      <h1>留言翻譯</h1><p>貼上日文留言，或寫繁中並轉為日文。送出前可自行修改。</p>
+      <label for="incoming">日文 → 繁中</label><textarea id="incoming" placeholder="貼上日文留言"></textarea><button id="translate-incoming">翻成繁中</button><div id="incoming-result" class="result" aria-live="polite"></div>
+      <label for="outgoing">繁中 → 日文</label><textarea id="outgoing" placeholder="輸入想說的話"></textarea><button id="translate-outgoing">翻成日文</button><div id="outgoing-result" class="result" aria-live="polite"></div><button id="copy-outgoing" disabled>複製日文</button>
+    </section>
+    <section id="settings" class="page">
+      <h1>翻譯設定</h1><p>設定會保存在這台電腦的 Chrome 擴充功能儲存空間。</p>
+      <label for="provider">服務</label><select id="provider"><option value="nvidia">NVIDIA Build</option><option value="openai">OpenAI v1 Chat Completions</option><option value="custom">自訂相容 API</option><option value="none">只顯示日文</option></select>
+      <label for="model">模型名稱</label><input id="model" spellcheck="false">
+      <div id="endpoint-field"><label for="endpoint">API 網址（完整 /chat/completions）</label><input id="endpoint" spellcheck="false"></div>
+      <label for="api-key">API Key</label><input id="api-key" type="password" autocomplete="off" spellcheck="false"><p class="hint">金鑰只存於本機 Chrome，傳送到你選擇的 API 時使用。</p>
+      <label for="style">日文留言習慣</label><textarea id="style" placeholder="例如：短句、少用 emoji、偶爾用 w"></textarea>
+      <button id="save" class="primary">儲存設定</button><button id="test-translation">測試翻譯</button><div id="settings-result" role="status"></div>
+    </section>
+  </main>
+  <script src="panel.js"></script>
+</body></html>

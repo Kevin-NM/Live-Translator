@@ -53,7 +53,8 @@ async def translate_text(request: TranslateRequest):
 @app.websocket("/ws/audio")
 async def audio_socket(ws: WebSocket):
     origin = ws.headers.get("origin")
-    if origin and urlparse(origin).netloc != ws.headers.get("host"):
+    parsed_origin = urlparse(origin) if origin else None
+    if origin and parsed_origin.netloc != ws.headers.get("host") and parsed_origin.scheme != "chrome-extension":
         await ws.close(code=1008)
         return
     await ws.accept()

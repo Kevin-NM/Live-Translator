@@ -1,5 +1,6 @@
 import unittest
 import asyncio
+import json
 from unittest.mock import patch
 
 import httpx
@@ -42,8 +43,39 @@ class TranslationSettingsTests(unittest.TestCase):
         self.assertEqual(calls[0].headers["authorization"], "Bearer test-key")
         self.assertIn("短句", calls[0].content.decode("utf-8"))
 
+    def test_nvidia_uses_supported_default_and_user_message(self):
+        calls = []
+
+        def handler(request):
+            calls.append(json.loads(request.content))
+            return httpx.Response(200, json={"choices": [{"message": {"content": "你好"}}]})
+
+        real_client = httpx.AsyncClient
+        with patch("app.translation.httpx.AsyncClient", side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(handler))):
+            config = TranslationConfig.from_payload({"provider": "nvidia", "api_key": "test-key"})
+            result = asyncio.run(translate("こんにちは", "ja-zh", config))
+        self.assertEqual(result, "你好")
+        self.assertEqual(calls[0]["model"], "google/gemma-4-31b-it")
+        self.assertEqual([item["role"] for item in calls[0]["messages"]], ["user"])
+
+    def test_retired_model_error_is_actionable(self):
+        real_client = httpx.AsyncClient
+        transport = httpx.MockTransport(lambda request: httpx.Response(410, json={"detail": "Model retired"}))
+        with patch("app.translation.httpx.AsyncClient", side_effect=lambda **kwargs: real_client(transport=transport)):
+            config = TranslationConfig.from_payload({"provider": "nvidia", "api_key": "test-key", "model": "old-model"})
+            with self.assertRaisesRegex(ValueError, "模型或 API 網址無效.*HTTP 410"):
+                asyncio.run(translate("こんにちは", "ja-zh", config))
+
 
 class AudioSocketTests(unittest.TestCase):
+    def test_extension_origin_can_connect(self):
+        with patch("app.main.get_model", return_value=object()):
+            with TestClient(app).websocket_connect("/ws/audio", headers={"origin": "chrome-extension://test-extension"}) as ws:
+                ws.send_json({"translation": {"provider": "none"}})
+                self.assertEqual(ws.receive_json()["type"], "status")
+                self.assertEqual(ws.receive_json()["type"], "ready")
+                ws.send_json({"type": "eos"})
+
     def test_pcm_stream_emits_partial_and_final(self):
         packet = (np.full(3200, 9000, dtype="<i2")).tobytes()
         with patch("app.main.get_model", return_value=object()), patch("app.main.transcribe_pcm", return_value="こんにちは"):

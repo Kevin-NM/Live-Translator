@@ -8,7 +8,7 @@ import httpx
 
 
 PRESETS = {
-    "nvidia": ("https://integrate.api.nvidia.com/v1/chat/completions", "qwen/qwen3-next-80b-a3b-instruct", "NVIDIA_API_KEY"),
+    "nvidia": ("https://integrate.api.nvidia.com/v1/chat/completions", "google/gemma-4-31b-it", "NVIDIA_API_KEY"),
     "openai": ("https://api.openai.com/v1/chat/completions", "gpt-4.1-mini", "OPENAI_API_KEY"),
 }
 
@@ -55,14 +55,28 @@ async def translate(text: str, direction: str, config: TranslationConfig, style:
     headers = {"Content-Type": "application/json"}
     if config.api_key:
         headers["Authorization"] = f"Bearer {config.api_key}"
+    messages = ([{"role": "user", "content": f"{instruction}\n\n原文：\n{text[:4000]}"}]
+                if config.provider == "nvidia" else
+                [{"role": "system", "content": instruction}, {"role": "user", "content": text[:4000]}])
     payload = {
         "model": config.model,
-        "messages": [{"role": "system", "content": instruction}, {"role": "user", "content": text[:4000]}],
+        "messages": messages,
         "stream": False,
     }
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(config.endpoint, headers=headers, json=payload)
-        response.raise_for_status()
+        if response.is_error:
+            try:
+                body = response.json()
+                detail = body.get("detail") or body.get("message") or body.get("error") or ""
+                if isinstance(detail, dict):
+                    detail = detail.get("message") or str(detail)
+            except (ValueError, AttributeError):
+                detail = ""
+            detail = str(detail)[:300]
+            if response.status_code in (404, 410):
+                raise ValueError(f"模型或 API 網址無效（HTTP {response.status_code}）。請確認目前可用的模型名稱。{detail}")
+            raise ValueError(f"翻譯服務回應 HTTP {response.status_code}：{detail or response.reason_phrase}")
         data = response.json()
     content = data["choices"][0]["message"]["content"]
     if not isinstance(content, str) or not content.strip():

@@ -19,7 +19,7 @@ function attach() {
   if (!host) {
     host = document.createElement('div');
     host.id = 'live-translator-overlay';
-    host.style.cssText = 'position:absolute;inset:0;z-index:2147483647;pointer-events:none;display:flex;align-items:flex-end;justify-content:center;padding:0 5% 10%;box-sizing:border-box;overflow:hidden;';
+    host.style.cssText = 'position:absolute;inset:0;z-index:19;pointer-events:none;display:flex;align-items:flex-end;justify-content:center;padding:0 5% 10%;box-sizing:border-box;overflow:hidden;';
     root = host.attachShadow({mode: 'open'});
     root.innerHTML = `<style>
       .box{position:relative;z-index:2;max-width:min(90%,1000px);text-align:center;color:white;font:600 clamp(18px,2.4vw,32px)/1.45 system-ui,sans-serif;text-shadow:0 2px 5px #000,0 0 12px #000;white-space:pre-wrap;overflow-wrap:anywhere}
@@ -34,10 +34,12 @@ function stopVideoDelay() {
   if (!videoDelay) return;
   const state = videoDelay;
   videoDelay = null;
-  clearInterval(state.paintTimer);
+  cancelAnimationFrame(state.paintTimer);
+  for (const [name, handler] of Object.entries(state.listeners)) state.video.removeEventListener(name, handler);
   if (state.callbackId != null) state.video.cancelVideoFrameCallback(state.callbackId);
   state.canvas.remove();
   for (const item of state.frames) { item.frame.width = 0; item.frame.height = 0; }
+  for (const frame of state.pool) { frame.width = 0; frame.height = 0; }
   state.frames.length = 0;
 }
 
@@ -46,9 +48,9 @@ function delayFailed(error) {
   chrome.runtime.sendMessage({target: 'worker', type: 'video_delay_error', message: error.message}).catch(() => {});
 }
 
-function makeFrame(video, width, height) {
-  const frame = document.createElement('canvas');
-  frame.width = width; frame.height = height;
+function makeFrame(video, width, height, reusable) {
+  const frame = reusable || document.createElement('canvas');
+  if (!reusable) { frame.width = width; frame.height = height; }
   const context = frame.getContext('2d', {alpha: false});
   if (!context) throw new Error('瀏覽器無法建立影片影格');
   context.drawImage(video, 0, 0, width, height);
@@ -65,10 +67,10 @@ function startVideoDelay(preparing = false) {
   }
   if (videoDelay?.video === video && videoDelay.canvas.isConnected) {
     if (!preparing && !videoDelay.visible) {
-      for (const item of videoDelay.frames) { item.frame.width = 0; item.frame.height = 0; }
+      for (const item of videoDelay.frames) videoDelay.pool.push(item.frame);
       videoDelay.frames = [];
       try {
-        const frame = makeFrame(video, videoDelay.canvas.width, videoDelay.canvas.height);
+        const frame = makeFrame(video, videoDelay.canvas.width, videoDelay.canvas.height, videoDelay.pool.pop());
         videoDelay.frames.push({at: Date.now(), frame});
         videoDelay.context.drawImage(frame, 0, 0);
       } catch (error) { delayFailed(error); return; }
@@ -78,7 +80,7 @@ function startVideoDelay(preparing = false) {
     return;
   }
   stopVideoDelay();
-  const width = Math.min(960, video.videoWidth);
+  const width = Math.min(640, video.videoWidth);
   const height = Math.max(1, Math.round(width * video.videoHeight / video.videoWidth));
   const canvas = document.createElement('canvas');
   canvas.id = 'live-translator-delayed-video';
@@ -86,7 +88,7 @@ function startVideoDelay(preparing = false) {
   canvas.height = height;
   canvas.style.cssText = `position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;pointer-events:none;z-index:1;opacity:${preparing ? '0.001' : '1'};`;
   root.prepend(canvas);
-  const state = {video, canvas, context: canvas.getContext('2d', {alpha: false}), frames: [], callbackId: null, paintTimer: null, lastCapture: 0, visible: !preparing};
+  const state = {video, canvas, context: canvas.getContext('2d', {alpha: false}), frames: [], pool: [], listeners: {}, callbackId: null, paintTimer: null, lastCapture: 0, lastPainted: null, pausedAt: null, visible: !preparing};
   videoDelay = state;
   if (!state.context) {
     const error = new Error('瀏覽器無法建立影片緩衝畫布');
@@ -105,29 +107,48 @@ function startVideoDelay(preparing = false) {
   function capture(now) {
     if (videoDelay !== state) return;
     try {
-      if (now - state.lastCapture >= 50 && video.readyState >= 2) {
-        const frame = makeFrame(video, width, height);
+      if (!state.pausedAt && now - state.lastCapture >= 1000 / 24 && video.readyState >= 2) {
+        if (state.frames.length >= Math.ceil(delayMs / 1000 * 24) + 4) state.pool.push(state.frames.shift().frame);
+        const frame = makeFrame(video, width, height, state.pool.pop());
         state.frames.push({at: Date.now(), frame});
         state.lastCapture = now;
-        while (state.frames.length > 150 || (state.frames.length > 1 && state.frames[0].at < Date.now() - delayMs - 1000)) {
-          const old = state.frames.shift(); old.frame.width = 0; old.frame.height = 0;
-        }
       }
     } catch (error) { delayFailed(error); return; }
     state.callbackId = video.requestVideoFrameCallback(capture);
   }
   state.callbackId = video.requestVideoFrameCallback(capture);
-  state.paintTimer = setInterval(() => {
+  function paint() {
     if (videoDelay !== state) return;
+    state.paintTimer = requestAnimationFrame(paint);
+    if (state.pausedAt) return;
     const target = Date.now() - delayMs;
     while (state.frames.length > 1 && state.frames[1].at <= target) {
-      const old = state.frames.shift(); old.frame.width = 0; old.frame.height = 0;
+      state.pool.push(state.frames.shift().frame);
     }
-    if (state.frames[0]) {
-      try { state.context.drawImage(state.frames[0].frame, 0, 0); }
+    if (state.frames[0] && state.lastPainted !== state.frames[0].at) {
+      try { state.context.drawImage(state.frames[0].frame, 0, 0); state.lastPainted = state.frames[0].at; }
       catch (error) { delayFailed(error); }
     }
-  }, 50);
+  }
+  state.paintTimer = requestAnimationFrame(paint);
+  state.listeners = {
+    pause() {
+      if (!state.visible || state.pausedAt) return;
+      state.pausedAt = Date.now();
+      chrome.runtime.sendMessage({target: 'worker', type: 'playback', paused: true}).catch(() => {});
+    },
+    play() {
+      if (!state.pausedAt) return;
+      const gap = Date.now() - state.pausedAt;
+      for (const item of state.frames) item.at += gap;
+      if (audioClockEpoch != null) audioClockEpoch += gap;
+      state.pausedAt = null;
+      chrome.runtime.sendMessage({target: 'worker', type: 'playback', paused: false, gap_ms: gap}).catch(() => {});
+    },
+    seeking() { if (state.visible) delayFailed(new Error('影片已跳轉，請重新開始擷取以建立字幕時間軸')); },
+  };
+  for (const [name, handler] of Object.entries(state.listeners)) video.addEventListener(name, handler);
+  if (video.paused) state.listeners.pause();
 }
 
 function prepareVisual(requestedDelay) {
@@ -156,7 +177,7 @@ function selectCaption() {
     const last = [...captions.values()].at(-1);
     return last || partial;
   }
-  const heardAt = Date.now() - delayMs - audioClockEpoch;
+  const heardAt = (videoDelay?.pausedAt || Date.now()) - delayMs - audioClockEpoch;
   let chosen = null;
   for (const item of captions.values()) {
     const grace = delayMs ? 1200 : 8000;
@@ -172,9 +193,10 @@ function render() {
   if (!root) return;
   const item = selectCaption();
   root.querySelector('.box').style.display = item ? 'block' : 'none';
-  root.querySelector('.ja').textContent = item?.ja || '';
+  const ja = root.querySelector('.ja');
+  if (ja.textContent !== (item?.ja || '')) ja.textContent = item?.ja || '';
   const zh = root.querySelector('.zh');
-  zh.textContent = item?.zh || '';
+  if (zh.textContent !== (item?.zh || '')) zh.textContent = item?.zh || '';
   zh.style.display = item?.zh ? 'block' : 'none';
   zh.classList.toggle('error', Boolean(item?.error));
   host.style.display = 'flex';

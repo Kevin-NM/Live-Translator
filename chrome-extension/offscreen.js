@@ -92,4 +92,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     else sendResponse({ok: true});
     return true;
   }
+  if (message.type === 'playback') {
+    const active = capture;
+    if (!active || active.id !== message.id || active.stopping) { sendResponse({ok: false}); return; }
+    const operation = message.paused ? active.context.suspend() : active.context.resume();
+    operation.then(() => sendResponse({ok: true})).catch(error => sendResponse({ok: false, error: error.message}));
+    return true;
+  }
 });

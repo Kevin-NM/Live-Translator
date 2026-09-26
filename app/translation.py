@@ -110,6 +110,12 @@ async def translate(text: str, direction: str, config: TranslationConfig, style:
         return content.strip()
 
     async with httpx.AsyncClient(timeout=30) as client:
+        if riva and source_code != "en" and target_code != "en":
+            # Riva is trained/evaluated around English language pairs. Pivot rather
+            # than interpreting an English response as the requested Chinese.
+            payload["messages"] = [{"role": "system", "content": f"{source_code}-en"}, {"role": "user", "content": text[:4000]}]
+            intermediate = await request(client, payload)
+            payload["messages"] = [{"role": "system", "content": f"en-{target_code}"}, {"role": "user", "content": intermediate}]
         content = await request(client, payload)
         if direction == "ja-zh" and config.target_language in ("zh-TW", "zh-CN") and len(content) >= 8 and re.search(r"[A-Za-z]", content) and not re.search(r"[\u4e00-\u9fff]", content):
             correction = (
@@ -117,7 +123,9 @@ async def translate(text: str, direction: str, config: TranslationConfig, style:
                 f"Rewrite the Japanese source into {target_name} ({config.target_language}), using Chinese characters. "
                 f"Output only Chinese. Japanese source: {text[:4000]}"
             )
-            payload["messages"] = messages if riva else ([{"role": "user", "content": correction}] if config.provider == "nvidia" else
+            if riva:
+                raise ValueError(f"Riva 英文→{target_native}仍回傳非中文；請在設定確認模型版本與語言，或改用一般聊天模型")
+            payload["messages"] = ([{"role": "user", "content": correction}] if config.provider == "nvidia" else
                                    [{"role": "system", "content": instruction}, {"role": "user", "content": correction}])
             content = await request(client, payload)
             if len(content) >= 8 and re.search(r"[A-Za-z]", content) and not re.search(r"[\u4e00-\u9fff]", content):

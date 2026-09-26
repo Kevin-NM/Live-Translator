@@ -16,7 +16,7 @@ from app.translation import PRESETS, TranslationConfig, translate
 
 
 ROOT = Path(__file__).resolve().parent.parent
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 app = FastAPI(title="Live Translator")
 app.mount("/static", StaticFiles(directory=ROOT / "web"), name="static")
 

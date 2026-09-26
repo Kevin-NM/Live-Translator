@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const source = name => fs.readFileSync(path.join(__dirname, '../chrome-extension', name), 'utf8');
 
-function worker({missing = false, prepared = true, version = 3} = {}) {
+function worker({missing = false, prepared = true, version = 4} = {}) {
   const calls = [];
   let listener;
   const chrome = {
@@ -67,6 +67,9 @@ test('offscreen refuses delayed audio when visual activation fails', async () =>
 
 function overlay() {
   let listener;
+  let now = 100000, frameCallback, paintCallback;
+  const events = {};
+  const messages = [];
   const elements = [];
   class Element {
     style = {}; children = []; isConnected = true;
@@ -82,12 +85,12 @@ function overlay() {
     getContext() {return {drawImage() {}};}
   }
   const player = new Element();
-  const video = {parentElement: player, readyState: 4, videoWidth: 640, videoHeight: 360, requestVideoFrameCallback: () => 1, cancelVideoFrameCallback() {}};
+  const video = {parentElement: player, readyState: 4, videoWidth: 640, videoHeight: 360, requestVideoFrameCallback: fn => {frameCallback = fn; return 1;}, cancelVideoFrameCallback() {}, addEventListener: (name, fn) => events[name] = fn, removeEventListener: name => delete events[name]};
   const document = {querySelector: name => name === '.html5-video-player' ? player : video, createElement: () => {const e = new Element(); elements.push(e); return e;}, elementFromPoint: () => player.children.at(-1)};
-  const chrome = {runtime: {onMessage: {addListener: fn => listener = fn}, sendMessage: async () => ({session: null})}};
-  vm.runInNewContext(source('content.js'), {document, chrome, setInterval: () => 1, clearInterval() {}, Date});
+  const chrome = {runtime: {onMessage: {addListener: fn => listener = fn}, sendMessage: async m => {messages.push(m); return {session: null};}}};
+  vm.runInNewContext(source('content.js'), {document, chrome, setInterval: () => 1, clearInterval() {}, requestAnimationFrame: fn => {paintCallback = fn; return 1;}, cancelAnimationFrame() {}, Date: {now: () => now}});
   const send = m => {let response; listener({target: 'overlay-v3', ...m}, {}, value => response = value); return response;};
-  return {send, player, elements};
+  return {send, player, elements, events, messages, tick: () => {now += 50; frameCallback?.(now); paintCallback?.();}};
 }
 test('video canvas and captions share the top overlay; activation acknowledges visible canvas', () => {
   const o = overlay();
@@ -95,6 +98,7 @@ test('video canvas and captions share the top overlay; activation acknowledges v
   o.send({type: 'state', state: 'starting', delay_ms: 2000});
   assert.equal(o.send({type: 'capture_started', delay_ms: 2000}).ok, true);
   const host = o.player.children[0];
+  assert.match(host.style.cssText, /z-index:19;pointer-events:none/);
   const canvas = host.shadow.children[0];
   assert.equal(canvas.id, 'live-translator-delayed-video');
   assert.equal(canvas.style.opacity, '1');
@@ -104,4 +108,23 @@ test('video canvas and captions share the top overlay; activation acknowledges v
   o.send({type: 'abort'});
   assert.equal(canvas.isConnected, false);
   assert.equal(host.style.display, 'none');
+});
+test('six-second playback has bounded canvas allocation and removes playback listeners', () => {
+  const o = overlay();
+  o.send({type: 'prepare', delay_ms: 6000});
+  o.send({type: 'state', state: 'starting', delay_ms: 6000});
+  o.send({type: 'capture_started', delay_ms: 6000});
+  for (let i = 0; i < 200; i++) o.tick();
+  const allocated = o.elements.length;
+  for (let i = 0; i < 1000; i++) o.tick();
+  assert.equal(o.elements.length, allocated, 'steady playback must reuse canvases');
+  assert.ok(allocated <= 150, `canvas allocation must be bounded: ${allocated}`);
+  o.events.pause();
+  assert.equal(o.messages.at(-1).paused, true);
+  for (let i = 0; i < 100; i++) o.tick();
+  o.events.play();
+  assert.equal(o.messages.at(-1).paused, false);
+  assert.equal(o.messages.at(-1).gap_ms, 5000);
+  o.send({type: 'abort'});
+  assert.equal(Object.keys(o.events).length, 0);
 });

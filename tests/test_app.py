@@ -12,8 +12,23 @@ from app.translation import TranslationConfig, translate
 
 
 class TranslationSettingsTests(unittest.TestCase):
+    def test_custom_riva_pivots_japanese_through_english_to_chinese(self):
+        calls = []
+        def handler(request):
+            body = json.loads(request.content)
+            calls.append(body)
+            pair = body['messages'][0]['content']
+            result = {'ja-en': 'Congratulations!', 'en-zh-tw': '恭喜！'}[pair]
+            return httpx.Response(200, json={"choices": [{"message": {"content": result}}]})
+        real_client = httpx.AsyncClient
+        config = TranslationConfig.from_payload({"provider": "custom", "endpoint": "https://api.banana2556.com/v1/chat/completions", "model": "nvidia/riva-translate-4b-instruct-v2", "api_key": "test"})
+        with patch("app.translation.httpx.AsyncClient", side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(handler))):
+            self.assertEqual(asyncio.run(translate('おめでとう！', 'ja-zh', config)), '恭喜！')
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1]['messages'][1]['content'], 'Congratulations!')
+
     def test_protocol_version(self):
-        self.assertEqual(TestClient(app).get('/api/status').json()['protocol_version'], 3)
+        self.assertEqual(TestClient(app).get('/api/status').json()['protocol_version'], 4)
 
     def test_target_language_selection_and_riva_payload(self):
         calls = []

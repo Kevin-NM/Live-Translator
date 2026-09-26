@@ -93,7 +93,7 @@ async function checkService() {
   const response = await fetch('http://127.0.0.1:8788/api/status');
   if (!response.ok) throw new Error('無法連線到本機服務');
   const data = await response.json();
-  if (data.protocol_version !== 3) throw new Error('本機服務仍是舊版，請關閉舊服務並重新執行 start.bat');
+  if (data.protocol_version !== 4) throw new Error('本機服務仍是舊版，請關閉舊服務並重新執行 start.bat');
   return data;
 }
 $('test-translation').addEventListener('click', async () => {
@@ -138,6 +138,6 @@ $('copy-outgoing').addEventListener('click', () => navigator.clipboard.writeText
   const state = await chrome.runtime.sendMessage({target: 'worker', type: 'getState'});
   showEvent({type: 'state', state: state?.session?.state || 'stopped'});
   checkService().then(data => {
-    $('model-state').textContent = `擴充功能 0.3.0 · ${data.model_ready ? '本機模型已就緒' : '模型尚未下載'}`;
+    $('model-state').textContent = `擴充功能 0.3.1 · ${data.model_ready ? '本機模型已就緒' : '模型尚未下載'}`;
   }).catch(error => { $('model-state').textContent = `服務檢查失敗：${error.message}`; });
 })();

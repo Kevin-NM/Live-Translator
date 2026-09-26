@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const source = name => fs.readFileSync(path.join(__dirname, '../chrome-extension', name), 'utf8');
 
-function worker({missing = false, prepared = true, version = 5} = {}) {
+function worker({missing = false, prepared = true, version = 6} = {}) {
   const calls = [];
   let listener;
   const chrome = {
@@ -127,4 +127,29 @@ test('six-second playback has bounded canvas allocation and removes playback lis
   assert.equal(o.messages.at(-1).gap_ms, 5000);
   o.send({type: 'abort'});
   assert.equal(Object.keys(o.events).length, 0);
+});
+test('translated-only captions hide pending Japanese, use chosen size and paginate complete text', () => {
+  const o = overlay();
+  o.send({type: 'state', state: 'starting', captions: {size: 16, mode: 'translated'}});
+  o.send({type: 'audio_clock', start_epoch_ms: 100000});
+  o.send({type: 'final', id: 'long', text: '日本語', start_ms: 0, end_ms: 6000});
+  const parts = o.player.children[0].shadow.parts;
+  assert.equal(parts['.box'].style.display, 'none');
+  assert.equal(parts['.ja'].style.display, 'none');
+  o.send({type: 'translation', id: 'long', text: '中'.repeat(100)});
+  assert.equal(parts['.box'].style.fontSize, '16px');
+  assert.equal(parts['.zh'].textContent.replaceAll('\n', '').length, 64);
+  for (let i = 0; i < 70; i++) o.tick();
+  o.send({type: 'caption_settings', captions: {size: 16, mode: 'translated'}});
+  assert.equal(parts['.zh'].textContent.replaceAll('\n', '').length, 36);
+});
+test('twelve-second delay bounds total canvas pixels instead of doubling memory', () => {
+  const o = overlay();
+  o.send({type: 'prepare', delay_ms: 12000});
+  o.send({type: 'state', state: 'starting', delay_ms: 12000});
+  o.send({type: 'capture_started', delay_ms: 12000});
+  for (let i = 0; i < 400; i++) o.tick();
+  const usedBytes = o.elements.filter(e => e.width > 0).reduce((sum, e) => sum + e.width * e.height * 4, 0);
+  assert.ok(usedBytes < 150 * 1024 * 1024, `canvas memory ${usedBytes}`);
+  assert.ok(o.player.children[0].shadow.children[0].width < 640);
 });

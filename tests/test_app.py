@@ -28,7 +28,7 @@ class TranslationSettingsTests(unittest.TestCase):
         self.assertEqual(calls[1]['messages'][1]['content'], 'Congratulations!')
 
     def test_protocol_version(self):
-        self.assertEqual(TestClient(app).get('/api/status').json()['protocol_version'], 5)
+        self.assertEqual(TestClient(app).get('/api/status').json()['protocol_version'], 6)
 
     def test_target_language_selection_and_riva_payload(self):
         calls = []
@@ -118,6 +118,23 @@ class TranslationSettingsTests(unittest.TestCase):
 
 
 class AudioSocketTests(unittest.TestCase):
+    def test_translated_only_skips_previews_and_finalises_at_four_seconds(self):
+        packet = np.full(3200, 9000, dtype='<i2').tobytes()
+        with patch('app.main.get_model', return_value=object()), patch('app.main.transcribe_pcm', return_value='テスト') as decode, patch('app.main.translate', return_value='測試'):
+            with TestClient(app).websocket_connect('/ws/audio') as ws:
+                ws.send_json({'translation': {'provider': 'custom', 'endpoint': 'http://localhost:1234/v1/chat/completions', 'model': 'test'}, 'recognition': {'previews': False, 'segment_seconds': 4}})
+                ws.receive_json(); ws.receive_json()
+                for _ in range(20): ws.send_bytes(packet)
+                final = ws.receive_json()
+                self.assertEqual(final['type'], 'final')
+                self.assertEqual(final['end_ms'], 4000)
+                translated = ws.receive_json()
+                self.assertEqual(translated['type'], 'translation')
+                self.assertGreaterEqual(translated['required_delay_ms'], 4000)
+                self.assertEqual(decode.call_count, 1)
+                self.assertTrue(decode.call_args.kwargs['final'])
+                ws.send_json({'type': 'eos'})
+
     def test_caption_timestamps_include_silence_before_voice(self):
         silence = (np.zeros(3200, dtype="<i2")).tobytes()
         voice = (np.full(3200, 9000, dtype="<i2")).tobytes()

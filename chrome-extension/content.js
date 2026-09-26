@@ -11,6 +11,7 @@ let audioClockEpoch = null;
 let visualCaptureStarted = false;
 let partial = null;
 let videoDelay = null;
+let captionSettings = {size: 20, mode: 'translated'};
 const captions = new Map();
 
 function attach() {
@@ -19,12 +20,12 @@ function attach() {
   if (!host) {
     host = document.createElement('div');
     host.id = 'live-translator-overlay';
-    host.style.cssText = 'position:absolute;inset:0;z-index:19;pointer-events:none;display:flex;align-items:flex-end;justify-content:center;padding:0 5% 10%;box-sizing:border-box;overflow:hidden;';
+    host.style.cssText = 'position:absolute;inset:0;z-index:19;pointer-events:none;display:flex;align-items:flex-end;justify-content:center;padding:0 5% 7%;box-sizing:border-box;overflow:hidden;';
     root = host.attachShadow({mode: 'open'});
     root.innerHTML = `<style>
-      .box{position:relative;z-index:2;max-width:min(90%,1000px);text-align:center;color:white;font:600 clamp(18px,2.4vw,32px)/1.45 system-ui,sans-serif;text-shadow:0 2px 5px #000,0 0 12px #000;white-space:pre-wrap;overflow-wrap:anywhere}
+      .box{position:relative;z-index:2;max-width:90%;text-align:center;color:white;font:500 20px/1.35 system-ui,sans-serif;text-shadow:0 2px 4px #000;white-space:pre-wrap;overflow-wrap:anywhere}
       .ja,.zh{display:block;background:rgba(0,0,0,.72);padding:3px 14px;margin:3px auto;border-radius:6px;width:fit-content;max-width:100%;box-sizing:border-box}
-      .zh{color:#ffe8a5}.error{font-size:14px;color:#ffb5a8}
+      .ja{font-size:.72em;opacity:.9;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.zh{color:#ffe8a5}.error{font-size:14px;color:#ffb5a8}
     </style><div class="box"><span class="ja"></span><span class="zh"></span></div>`;
   }
   if (host.parentElement !== player) player.append(host);
@@ -80,7 +81,7 @@ function startVideoDelay(preparing = false) {
     return;
   }
   stopVideoDelay();
-  const width = Math.min(640, video.videoWidth);
+  const width = Math.min(Math.floor(640 * Math.sqrt(6000 / Math.max(6000, delayMs)) / 2) * 2, video.videoWidth);
   const height = Math.max(1, Math.round(width * video.videoHeight / video.videoWidth));
   const canvas = document.createElement('canvas');
   canvas.id = 'live-translator-delayed-video';
@@ -181,10 +182,23 @@ function selectCaption() {
   let chosen = null;
   for (const item of captions.values()) {
     const grace = delayMs ? 1200 : 8000;
-    if (item.start_ms <= heardAt && heardAt <= item.end_ms + grace && (!chosen || item.start_ms >= chosen.start_ms)) chosen = item;
+    const readingEnd = item.translated ? (item.display_start_ms ?? item.start_ms) + captionPages(item.zh).length * 1600 : 0;
+    if (item.start_ms <= heardAt && heardAt <= Math.max(item.end_ms + grace, readingEnd) && (!chosen || item.start_ms >= chosen.start_ms)) chosen = item;
   }
   if (partial && partial.start_ms <= heardAt && heardAt <= partial.end_ms + 1000 && (!chosen || partial.start_ms > chosen.end_ms)) return partial;
   return chosen;
+}
+
+function captionPages(text) {
+  const width = host?.getBoundingClientRect().width || 640;
+  const perLine = Math.max(10, Math.floor(width * .8 / captionSettings.size));
+  const chars = Array.from(text || '');
+  const pages = [];
+  for (let i = 0; i < chars.length; i += perLine * 2) {
+    const part = chars.slice(i, i + perLine * 2);
+    pages.push(part.slice(0, perLine).join('') + (part.length > perLine ? '\n' + part.slice(perLine).join('') : ''));
+  }
+  return pages.length ? pages : [''];
 }
 
 function render() {
@@ -192,11 +206,19 @@ function render() {
   attach();
   if (!root) return;
   const item = selectCaption();
-  root.querySelector('.box').style.display = item ? 'block' : 'none';
+  const onlyTranslated = captionSettings.mode === 'translated' && provider !== 'none';
+  root.querySelector('.box').style.fontSize = `${captionSettings.size}px`;
+  root.querySelector('.box').style.display = item && (!onlyTranslated || item.translated || item.error) ? 'block' : 'none';
   const ja = root.querySelector('.ja');
   if (ja.textContent !== (item?.ja || '')) ja.textContent = item?.ja || '';
+  ja.style.display = onlyTranslated ? 'none' : '-webkit-box';
   const zh = root.querySelector('.zh');
-  if (zh.textContent !== (item?.zh || '')) zh.textContent = item?.zh || '';
+  const pages = captionPages(item?.zh);
+  const heardAt = audioClockEpoch == null ? 0 : (videoDelay?.pausedAt || Date.now()) - delayMs - audioClockEpoch;
+  const begin = item?.display_start_ms ?? item?.start_ms ?? 0;
+  const pageMs = Math.max(1600, ((item?.end_ms ?? begin) - begin) / pages.length);
+  const page = Math.min(pages.length - 1, Math.max(0, Math.floor((heardAt - begin) / pageMs)));
+  if (zh.textContent !== pages[page]) zh.textContent = pages[page];
   zh.style.display = item?.zh ? 'block' : 'none';
   zh.classList.toggle('error', Boolean(item?.error));
   host.style.display = 'flex';
@@ -218,10 +240,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     active = message.state === 'starting' || message.state === 'running';
     if (message.provider) provider = message.provider;
     if (typeof message.delay_ms === 'number') delayMs = message.delay_ms;
+    if (message.captions) captionSettings = {size: [16,20,24].includes(message.captions.size) ? message.captions.size : 20, mode: message.captions.mode};
     if (!active) {
       stopVideoDelay();
       captions.clear(); partial = null; audioClockEpoch = null; visualCaptureStarted = false;
     }
+  } else if (message.type === 'caption_settings') {
+    captionSettings = {size: [16,20,24].includes(message.captions?.size) ? message.captions.size : 20, mode: message.captions?.mode};
   } else if (message.type === 'capture_started') {
     try {
       prepareVisual(message.delay_ms || 0);
@@ -248,6 +273,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const item = captions.get(message.id);
     item.zh = message.type === 'translation' ? message.text : `翻譯失敗：${message.message}`;
     item.error = message.type === 'translation_error';
+    item.translated = message.type === 'translation';
+    item.display_start_ms = Math.max(item.start_ms, audioClockEpoch == null ? item.start_ms : (videoDelay?.pausedAt || Date.now()) - delayMs - audioClockEpoch);
   }
   render();
 });
@@ -260,6 +287,7 @@ chrome.runtime.sendMessage({target: 'worker', type: 'getState'}).then(({session}
   delayMs = session.delayMs || 0;
   audioClockEpoch = session.audioClockEpoch ?? null;
   visualCaptureStarted = Boolean(session.captureStarted);
+  captionSettings = session.captions || captionSettings;
   startVideoDelay();
   render();
 }).catch(() => {});

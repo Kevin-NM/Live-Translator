@@ -42,7 +42,7 @@ async function start(message) {
     if (!visual?.ok) throw new Error(visual?.error || 'YouTube 畫面延遲未準備好，已取消音訊擷取');
     // tabCapture mutes the tab. The STT branch stays immediate; only listening is delayed.
     if (message.delayMs > 0) {
-      active.delay = active.context.createDelay(8);
+      active.delay = active.context.createDelay(16);
       active.delay.delayTime.value = message.delayMs / 1000;
       active.source.connect(active.delay).connect(active.context.destination);
     } else active.source.connect(active.context.destination);

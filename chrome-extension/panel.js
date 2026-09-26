@@ -32,7 +32,9 @@ function config() {
 }
 
 async function save() {
-  await chrome.storage.local.set({translation: config(), recognition: {quality: $('stt-quality').value, vocabulary: $('stt-vocabulary').value.trim()}, style: $('style').value, delayMs: Number($('delay-ms').value)});
+  const captions = {size: Number($('caption-size').value), mode: $('caption-mode').value};
+  await chrome.storage.local.set({translation: config(), captions, recognition: {quality: $('stt-quality').value, vocabulary: $('stt-vocabulary').value.trim(), segment_seconds: Number($('segment-seconds').value)}, style: $('style').value, delayMs: Number($('delay-ms').value)});
+  await chrome.runtime.sendMessage({target: 'worker', type: 'caption_settings', captions}).catch(() => {});
   $('settings-result').textContent = '已儲存到這台電腦的 Chrome。';
   $('settings-result').classList.remove('error');
 }
@@ -61,6 +63,10 @@ function showEvent(event) {
     const target = captionRows.get(event.id);
     target.textContent = event.type === 'translation' ? event.text : `翻譯失敗：${event.message}`;
     target.classList.toggle('error', event.type === 'translation_error');
+    if (event.type === 'translation' && Number.isFinite(event.required_delay_ms)) {
+      const needed = Math.ceil((event.required_delay_ms + 500) / 1000);
+      $('latency-info').textContent = `最近一句：辨識 ${(event.stt_ms / 1000).toFixed(1)} 秒、翻譯 ${(event.translation_ms / 1000).toFixed(1)} 秒；含切句等待，預估需 ${needed} 秒緩衝${needed > Number($('delay-ms').value) / 1000 ? '，目前延遲可能不足。' : '。'}`;
+    }
   } else if (event.type === 'error') {
     $('capture-status').textContent = `錯誤：${event.message}`;
     $('capture-status').classList.add('error');
@@ -89,11 +95,13 @@ chrome.runtime.onMessage.addListener(message => { if (message.target === 'panel'
 $('provider').addEventListener('change', () => providerChanged());
 $('save').addEventListener('click', save);
 $('target-language').addEventListener('change', save);
+$('caption-size').addEventListener('change', save);
+$('caption-mode').addEventListener('change', save);
 async function checkService() {
   const response = await fetch('http://127.0.0.1:8788/api/status');
   if (!response.ok) throw new Error('無法連線到本機服務');
   const data = await response.json();
-  if (data.protocol_version !== 5) throw new Error('本機服務仍是舊版，請關閉舊服務並重新執行 start.bat');
+  if (data.protocol_version !== 6) throw new Error('本機服務仍是舊版，請關閉舊服務並重新執行 start.bat');
   return data;
 }
 $('test-translation').addEventListener('click', async () => {
@@ -123,7 +131,7 @@ $('translate-outgoing').addEventListener('click', () => translateText('outgoing'
 $('copy-outgoing').addEventListener('click', () => navigator.clipboard.writeText($('outgoing-result').textContent));
 
 (async () => {
-  const saved = await chrome.storage.local.get(['translation', 'recognition', 'style', 'delayMs']);
+  const saved = await chrome.storage.local.get(['translation', 'recognition', 'captions', 'style', 'delayMs']);
   const translation = saved.translation || {provider: 'nvidia'};
   $('provider').value = translation.provider || 'nvidia';
   $('endpoint').value = translation.endpoint || defaults[translation.provider]?.endpoint || '';
@@ -132,6 +140,9 @@ $('copy-outgoing').addEventListener('click', () => navigator.clipboard.writeText
   $('style').value = saved.style || '';
   $('stt-quality').value = saved.recognition?.quality || 'accurate';
   $('stt-vocabulary').value = saved.recognition?.vocabulary || '';
+  $('segment-seconds').value = String(saved.recognition?.segment_seconds || 4);
+  $('caption-size').value = String(saved.captions?.size || 20);
+  $('caption-mode').value = saved.captions?.mode || 'translated';
   $('target-language').value = translation.target_language || 'zh-TW';
   $('delay-ms').value = String(saved.delayMs ?? 2000);
   providerChanged(false);
@@ -140,6 +151,6 @@ $('copy-outgoing').addEventListener('click', () => navigator.clipboard.writeText
   const state = await chrome.runtime.sendMessage({target: 'worker', type: 'getState'});
   showEvent({type: 'state', state: state?.session?.state || 'stopped'});
   checkService().then(data => {
-    $('model-state').textContent = `擴充功能 0.4.0 · ${data.model_ready ? '本機模型已就緒' : '模型尚未下載'}`;
+    $('model-state').textContent = `擴充功能 0.5.0 · ${data.model_ready ? '本機模型已就緒' : '模型尚未下載'}`;
   }).catch(error => { $('model-state').textContent = `服務檢查失敗：${error.message}`; });
 })();

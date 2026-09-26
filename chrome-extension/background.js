@@ -51,15 +51,16 @@ async function start(tabId) {
   if (!tab.url?.startsWith('https://www.youtube.com/')) throw new Error('請先開啟 YouTube 影片分頁。');
   await restoreSession();
   if (session) await stop();
-  const {translation = {provider: 'nvidia'}, recognition = {quality: 'accurate'}, delayMs: storedDelay = 2000} = await chrome.storage.local.get(['translation', 'recognition', 'delayMs']);
-  const delayMs = [0, 2000, 4000, 6000].includes(Number(storedDelay)) ? Number(storedDelay) : 2000;
+  const {translation = {provider: 'nvidia'}, recognition = {quality: 'accurate'}, captions = {size: 20, mode: 'translated'}, delayMs: storedDelay = 2000} = await chrome.storage.local.get(['translation', 'recognition', 'captions', 'delayMs']);
+  recognition.previews = captions.mode === 'bilingual' || translation.provider === 'none';
+  const delayMs = [0, 2000, 4000, 6000, 8000, 10000, 12000].includes(Number(storedDelay)) ? Number(storedDelay) : 2000;
   if (translation.provider !== 'none' && !translation.api_key && !translation.endpoint?.startsWith('http://localhost') && !translation.endpoint?.startsWith('http://127.0.0.1')) {
     throw new Error('請先在設定頁儲存 API Key，或選「只顯示日文」。');
   }
   const response = await fetch('http://127.0.0.1:8788/api/status').catch(() => null);
   if (!response?.ok) throw new Error('本機字幕服務未啟動。請執行 start.bat。');
   const status = await response.json();
-  if (status.protocol_version !== 5) throw new Error('本機字幕服務仍是舊版。請關閉舊服務，再重新執行 start.bat。');
+  if (status.protocol_version !== 6) throw new Error('本機字幕服務仍是舊版。請關閉舊服務，再重新執行 start.bat。');
   await ensureOverlay(tabId, delayMs);
   // Must be called from a user-invoked extension action or side-panel click.
   let streamId;
@@ -71,10 +72,10 @@ async function start(tabId) {
     throw error;
   }
   const id = crypto.randomUUID();
-  session = {id, tabId, state: 'starting', delayMs};
+  session = {id, tabId, state: 'starting', delayMs, captions};
   await saveSession();
   try {
-    if (!(await broadcast({type: 'state', state: 'starting', tabId, provider: translation.provider, delay_ms: delayMs}))) {
+    if (!(await broadcast({type: 'state', state: 'starting', tabId, provider: translation.provider, delay_ms: delayMs, captions}))) {
       throw new Error('YouTube 字幕層無法接收啟動訊息。');
     }
     const result = await chrome.runtime.sendMessage({target: 'offscreen', type: 'start', id, tabId, streamId, translation, recognition, delayMs});
@@ -111,6 +112,13 @@ chrome.action.onClicked.addListener(async (tab) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target === 'worker') {
+    if (message.type === 'caption_settings') {
+      restoreSession().then(async () => {
+        if (session) { session.captions = message.captions; await saveSession(); await broadcast({type: 'caption_settings', captions: message.captions}); }
+        return {ok: true};
+      }).then(sendResponse);
+      return true;
+    }
     if (message.type === 'getState') {
       restoreSession().then(() => sendResponse({session: sender.tab && sender.tab.id !== session?.tabId ? null : session}));
       return true;

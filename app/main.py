@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -16,7 +17,7 @@ from app.translation import PRESETS, TranslationConfig, translate
 
 
 ROOT = Path(__file__).resolve().parent.parent
-PROTOCOL_VERSION = 5
+PROTOCOL_VERSION = 6
 app = FastAPI(title="Live Translator")
 app.mount("/static", StaticFiles(directory=ROOT / "web"), name="static")
 
@@ -75,6 +76,10 @@ async def audio_socket(ws: WebSocket):
         if quality not in ("accurate", "fast"):
             raise ValueError("不支援的辨識模式")
         vocabulary = str(recognition.get("vocabulary", ""))[:500]
+        segment_seconds = int(recognition.get("segment_seconds", 4))
+        if segment_seconds not in (3, 4, 6):
+            raise ValueError("辨識片段必須為 3、4 或 6 秒")
+        previews = bool(recognition.get("previews", True))
         await send({"type": "status", "message": "載入本機 GPU 語音模型…"})
         await asyncio.to_thread(get_model)
         await send({"type": "ready"})
@@ -102,21 +107,25 @@ async def audio_socket(ws: WebSocket):
             sequence += 1
             current = sequence
             combined = np.concatenate(audio)
+            decode_started = time.perf_counter()
             result = await asyncio.to_thread(transcribe_pcm, combined, final=True, quality=quality, vocabulary=vocabulary)
+            stt_ms = round((time.perf_counter() - decode_started) * 1000)
             if result:
                 start_ms = round(utterance_start_sample / 16)
                 end_ms = round(last_voice_sample / 16)
-                await send({"type": "final", "id": current, "text": result, "start_ms": start_ms, "end_ms": end_ms})
+                await send({"type": "final", "id": current, "text": result, "start_ms": start_ms, "end_ms": end_ms, "stt_ms": stt_ms})
                 if config.provider != "none" and not config.api_key and not config.endpoint.startswith(("http://localhost", "http://127.0.0.1")):
                     await send({"type": "translation_error", "id": current, "start_ms": start_ms, "end_ms": end_ms, "message": "請填入 API Key"})
                 elif config.provider != "none":
-                    async def do_translate(text: str, item_id: int, cue_start_ms: int, cue_end_ms: int):
+                    async def do_translate(text: str, item_id: int, cue_start_ms: int, cue_end_ms: int, decoding_ms: int, accumulated_ms: int):
                         try:
+                            translation_started = time.perf_counter()
                             output = await translate(text, "ja-zh", config)
-                            await send({"type": "translation", "id": item_id, "start_ms": cue_start_ms, "end_ms": cue_end_ms, "text": output})
+                            translation_ms = round((time.perf_counter() - translation_started) * 1000)
+                            await send({"type": "translation", "id": item_id, "start_ms": cue_start_ms, "end_ms": cue_end_ms, "text": output, "stt_ms": decoding_ms, "translation_ms": translation_ms, "required_delay_ms": accumulated_ms + decoding_ms + translation_ms})
                         except Exception as exc:
                             await send({"type": "translation_error", "id": item_id, "start_ms": cue_start_ms, "end_ms": cue_end_ms, "message": str(exc)})
-                    task = asyncio.create_task(do_translate(result, current, start_ms, end_ms))
+                    task = asyncio.create_task(do_translate(result, current, start_ms, end_ms, stt_ms, round((total_samples - utterance_start_sample) / 16)))
                     translation_tasks.add(task)
                     task.add_done_callback(translation_tasks.discard)
         audio, samples, silence, has_voice, last_decode_samples = [], 0, 0, False, 0
@@ -163,12 +172,12 @@ async def audio_socket(ws: WebSocket):
             audio.append(chunk)
             samples += chunk.size
             silence = 0 if voice else silence + chunk.size
-            if samples >= 25600 and samples - last_decode_samples >= 25600 and silence < 9600:
+            if previews and samples >= 25600 and samples - last_decode_samples >= 25600 and silence < 9600 and samples < segment_seconds * 16000:
                 result = await asyncio.to_thread(transcribe_pcm, np.concatenate(audio), quality=quality, vocabulary=vocabulary)
                 if result:
                     await send({"type": "partial", "text": result, "start_ms": round(utterance_start_sample / 16), "end_ms": round(total_samples / 16)})
                 last_decode_samples = samples
-            if silence >= 11200 or samples >= 96000:
+            if silence >= 11200 or samples >= segment_seconds * 16000:
                 await finalise()
     except WebSocketDisconnect:
         pass

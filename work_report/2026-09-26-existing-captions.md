@@ -36,3 +36,9 @@ AI Router aggressive，委派精簡字幕架構／驗收風險與 WS 聚焦審�
 實際扩充功能新 MAIN 字幕取得、長片/自动字幕滾動語意、付費翻譯完整端到端尚未實測；backend公開字幕讀取與Web載入已實測，mock 不代表上述場景品質。影片中間跳到尚未翻到的位置仍可能沒有譯文，播放點優先目前只取啟動位置，工作中不重新排程。停止後先等舊工作清理再繼續，若收到「正在翻譯」稍後重試。多程序SQLite claim、批次API、動態seek優先是後續改善，非本次必備。
 
 更新步驟：安裝requirements、restart start.bat、reload 0.8.0、刷新YouTube；已有settings／models／0.7 DB保留。下一輪以有日文人工字幕影片实測extension read/fallback與自動字幕，再評估batch而不丟原始字幕時間。
+
+## GitHub 發布完成
+
+功能提交 `5027fa068a775a8c0697d0b1826f53be8f379dfc` 已推送 origin/master；GitHub CI run `36238694138` success，乾淨 Linux 安裝／Web檢查／61项測試全通過。公開 v0.8.0：https://github.com/Kevin-NM/Live-Translator/releases/tag/v0.8.0 ，tag 指向此已驗證提交，非draft。兩個下載資產 `Live-Translator-v0.8.0.zip`（127779 bytes）及 `Live-Translator-Chrome-v0.8.0.zip`（31811 bytes）成功上傳；ZIP檢查0.8.0 manifest、兩個新增共用JS、排除data/models/venv/tmp/env。公開前掃描441歷史物件與51發布檔案，無常見credential-pattern命中。
+
+測試程序由提權工具啟動，初次一般權限Stop-Process無法關閉；已再確認21752／15608的命令列只指向ui8-server.py，使用工具權限關閉，最終Get-Process確認兩PID消失、8790無listener。使用者的8788／8765未更動。發布与接續記錄已完成；後續尚未真實測試的場景如上，不代表本次推送尚未完成。

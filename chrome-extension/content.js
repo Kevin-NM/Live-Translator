@@ -227,6 +227,13 @@ function render() {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target !== 'overlay-v3') return;
   if (message.type === 'ping') { sendResponse({ok: true}); return; }
+  if (message.type === 'video_timeline') {
+    const video=document.querySelector('.html5-video-player video') || document.querySelector('video');
+    if (!video || !Number.isFinite(video.currentTime)) {sendResponse({ok:false}); return;}
+    const rate=video.paused ? 0 : video.playbackRate;
+    const age=Math.max(0,Date.now()-message.epoch_ms)/1000;
+    sendResponse({ok:true,media_ms:Math.max(0,Math.round((video.currentTime-age*rate)*1000)),rate}); return;
+  }
   if (message.type === 'prepare') {
     try { sendResponse(prepareVisual(message.delay_ms || 0)); }
     catch (error) { stopVideoDelay(); if (host) host.style.display = 'none'; sendResponse({ok: false, error: error.message}); }

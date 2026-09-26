@@ -17,7 +17,7 @@ async function release(active, finish = false) {
   if (active.socket?.readyState === WebSocket.OPEN) {
     if (finish) {
       active.socket.send(JSON.stringify({type: 'eos'}));
-      setTimeout(() => { if (!active.closed) active.socket?.close(); }, 30000);
+      setTimeout(() => { if (!active.closed) active.socket?.close(); }, 90000);
       return;
     } else active.socket.close();
   } else active.socket?.close();
@@ -70,7 +70,10 @@ async function start(message) {
         if (!active.clockSent) {
           active.clockSent = true;
           emit(active.id, {type: 'audio_clock', start_epoch_ms: Date.now() - 200});
+          emit(active.id, {type:'timeline_request',sample_ms:0,epoch_ms:Date.now()-200});
         }
+        active.samples = (active.samples || 0) + event.data.byteLength/2;
+        if (active.samples % 16000 === 0) emit(active.id,{type:'timeline_request',sample_ms:active.samples/16,epoch_ms:Date.now()});
         active.socket.send(event.data);
       }
     };
@@ -98,5 +101,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const operation = message.paused ? active.context.suspend() : active.context.resume();
     operation.then(() => sendResponse({ok: true})).catch(error => sendResponse({ok: false, error: error.message}));
     return true;
+  }
+  if (message.type === 'media_timeline') {
+    if (capture?.id === message.id && capture.socket?.readyState === WebSocket.OPEN) {
+      capture.socket.send(JSON.stringify({type:'timeline',sample_ms:message.sample_ms,media_ms:message.media_ms,rate:message.rate}));
+    }
+    sendResponse({ok:true}); return;
   }
 });

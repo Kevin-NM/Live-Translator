@@ -29,7 +29,8 @@ function panel(saved = {}) {
     tabs: {query: async () => [{id: 1}]},
     runtime: {onMessage: {addListener() {}}, sendMessage: async () => ({ok: true})},
   }, fetch: async (url, options) => {
-    if (url.endsWith('/api/status')) return {ok: true, json: async () => ({version:'0.6.0', protocol_version:7, models:[{id:'large-v3-turbo',label:'Turbo',ready:true}]})};
+    if (url.endsWith('/api/status')) return {ok: true, json: async () => ({version:'0.7.0', protocol_version:8, models:[{id:'large-v3-turbo',label:'Turbo',ready:true}]})};
+    if (url.endsWith('/api/transcripts')) return {ok:true,json:async () => []};
     requests.push(JSON.parse(options.body)); return {ok:true, json: async () => ({text:'測試譯文'})};
   }});
   vm.runInContext(read('chrome-extension/panel.js'), context);
@@ -41,12 +42,14 @@ test('old live settings migrate unchanged; default chat reuses live API', async 
   const p = panel({translation:live,delayMs:6000,recognition:{quality:'fast'}}); await tick();
   p.elements.get('incoming').value = 'こんにちは';
   await p.elements.get('translate-incoming').handlers.click();
-  assert.deepEqual(p.requests[0].translation, live);
+  const migrated={...live,source_language:'ja',reply_language:'ja'};
+  assert.deepEqual(p.requests[0].translation, migrated);
   await p.elements.get('save').handlers.click();
-  assert.deepEqual(JSON.parse(JSON.stringify(p.storage.translation)), live);
+  assert.deepEqual(JSON.parse(JSON.stringify(p.storage.translation)), migrated);
   assert.equal(p.storage.delayMs,6000);
   assert.equal(p.storage.chatApiMode,'live');
   assert.equal(p.storage.recognition.model,'large-v3-turbo');
+  assert.equal(p.storage.recognition.language,'ja');
 });
 
 test('independent chat requests use their own model endpoint key and target', async () => {
@@ -57,13 +60,26 @@ test('independent chat requests use their own model endpoint key and target', as
   await p.elements.get('translate-incoming').handlers.click();
   await p.elements.get('translate-outgoing').handlers.click();
   await p.elements.get('test-translation').handlers.click({currentTarget:p.elements.get('test-translation')});
-  assert.deepEqual(p.requests[0].translation,chat);
-  assert.deepEqual(p.requests[1].translation,chat);
-  assert.equal(p.requests[1].direction,'zh-ja');
-  assert.deepEqual(p.requests[2].translation,live);
+  assert.deepEqual(p.requests[0].translation,{...chat,source_language:'ja',reply_language:'ja'});
+  assert.deepEqual(p.requests[1].translation,{...chat,source_language:'ja',reply_language:'ja'});
+  assert.equal(p.requests[1].direction,'reply');
+  assert.deepEqual(p.requests[2].translation,{...live,source_language:'ja',reply_language:'ja'});
   assert.equal(p.elements.get('copy-outgoing').disabled,false);
-  assert.deepEqual(JSON.parse(JSON.stringify(p.storage.chatTranslation)),chat);
-  assert.deepEqual(JSON.parse(JSON.stringify(p.storage.translation)),live);
+  assert.deepEqual(JSON.parse(JSON.stringify(p.storage.chatTranslation)),{...chat,source_language:'ja',reply_language:'ja'});
+  assert.deepEqual(JSON.parse(JSON.stringify(p.storage.translation)),{...live,source_language:'ja',reply_language:'ja'});
+});
+
+test('source and reply language choices persist and timestamps parse video offsets',async () => {
+  const live={provider:'openai',model:'live',api_key:'test',source_language:'en',reply_language:'ko',target_language:'fr'};
+  const p=panel({translation:live}); await tick();
+  p.elements.get('incoming').value='Hello'; await p.elements.get('translate-incoming').handlers.click();
+  assert.equal(p.requests[0].translation.source_language,'en');
+  assert.equal(p.requests[0].translation.reply_language,'ko');
+  assert.equal(p.requests[0].translation.target_language,'fr');
+  await p.elements.get('save').handlers.click(); assert.equal(p.storage.recognition.language,'en');
+  assert.equal(vm.runInContext("parseTime('00:12:30.500')",p.context),750500);
+  assert.equal(vm.runInContext("parseTime('90')",p.context),90000);
+  assert.throws(() => vm.runInContext("parseTime('01:99:00')",p.context));
 });
 
 function web(hasAudio = true) {

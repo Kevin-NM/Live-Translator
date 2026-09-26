@@ -1,6 +1,8 @@
 import unittest
 import asyncio
 import json
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import httpx
@@ -9,9 +11,25 @@ from fastapi.testclient import TestClient
 
 from app.main import app, audio_socket
 from app.translation import TranslationConfig, translate
+from app.transcripts import TranscriptStore
 
 
 class TranslationSettingsTests(unittest.TestCase):
+    def test_general_translation_uses_selected_source_and_reply_languages(self):
+        calls=[]
+        def handler(request):
+            calls.append(json.loads(request.content))
+            return httpx.Response(200,json={'choices':[{'message':{'content':'Bonjour'}}]})
+        real_client=httpx.AsyncClient
+        config=TranslationConfig.from_payload({'provider':'openai','api_key':'test','source_language':'en','target_language':'fr','reply_language':'ko'})
+        with patch('app.translation.httpx.AsyncClient',side_effect=lambda **kwargs:real_client(transport=httpx.MockTransport(handler))):
+            asyncio.run(translate('Hello','source-target',config))
+            asyncio.run(translate('Bonjour','reply',config))
+        self.assertIn('English',calls[0]['messages'][0]['content'])
+        self.assertIn('French',calls[0]['messages'][0]['content'])
+        self.assertIn('Korean',calls[1]['messages'][0]['content'])
+        with self.assertRaises(ValueError): TranslationConfig.from_payload({'provider':'openai','api_key':'test','source_language':'xx'})
+
     def test_custom_riva_pivots_japanese_through_english_to_chinese(self):
         calls = []
         def handler(request):
@@ -28,7 +46,7 @@ class TranslationSettingsTests(unittest.TestCase):
         self.assertEqual(calls[1]['messages'][1]['content'], 'Congratulations!')
 
     def test_protocol_version(self):
-        self.assertEqual(TestClient(app).get('/api/status').json()['protocol_version'], 7)
+        self.assertEqual(TestClient(app).get('/api/status').json()['protocol_version'], 8)
 
     def test_target_language_selection_and_riva_payload(self):
         calls = []
@@ -118,6 +136,53 @@ class TranslationSettingsTests(unittest.TestCase):
 
 
 class AudioSocketTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.store = TranscriptStore(Path(self.directory.name) / 'test.sqlite3')
+        self.store_patch = patch('app.main.transcripts', self.store)
+        self.store_patch.start()
+
+    def tearDown(self):
+        self.store_patch.stop()
+        self.directory.cleanup()
+
+    def test_auto_detected_language_is_used_and_full_transcript_is_saved(self):
+        packet=np.full(3200,9000,dtype='<i2').tobytes()
+        with patch('app.main.acquire_model',return_value=object()),patch('app.main.transcribe_pcm',return_value=('Hello','en')),patch('app.main.translate',return_value='你好') as translator:
+            with TestClient(app).websocket_connect('/ws/audio') as ws:
+                ws.send_json({'translation':{'provider':'custom','endpoint':'http://localhost:1234/chat/completions','model':'test'},'recognition':{'language':'auto','previews':False}})
+                ws.receive_json(); ready=ws.receive_json()
+                for _ in range(20): ws.send_bytes(packet)
+                ws.receive_json(); ws.receive_json()
+                ws.send_json({'type':'timeline','sample_ms':0,'media_ms':120000,'rate':1})
+                ws.send_json({'type':'eos'})
+            record=self.store.get(ready['transcript_id'])
+            self.assertEqual(record['cues'][0]['source'],'Hello')
+            self.assertEqual(record['cues'][0]['translation'],'你好')
+            self.assertEqual(record['offset_ms'],120000)
+            self.assertEqual(translator.call_args.args[2].source_language,'en')
+
+    def test_translation_delivery_failure_keeps_saved_transcript(self):
+        packet = (np.full(3200,9000,dtype='<i2')).tobytes()
+        messages = iter([{'type':'websocket.receive','bytes':packet} for _ in range(5)] + [{'type':'websocket.receive','text':'{"type":"eos"}'}])
+        class Socket:
+            headers = {}
+            identity = None
+            async def accept(self): pass
+            async def receive_text(self): return '{"translation":{"provider":"custom","endpoint":"http://localhost:1234/chat/completions","model":"test"},"recognition":{"previews":false}}'
+            async def receive(self): return next(messages)
+            async def send_json(self, value):
+                if value['type'] == 'ready': self.identity = value['transcript_id']
+                if value['type'] == 'translation': raise RuntimeError('Browser closed')
+            async def close(self): pass
+        socket = Socket()
+        with patch('app.main.acquire_model',return_value=object()),patch('app.main.release_model'),patch('app.main.transcribe_pcm',return_value='Hello'),patch('app.main.translate',return_value='你好'):
+            asyncio.run(audio_socket(socket))
+        record=self.store.get(socket.identity)
+        self.assertEqual(record['cues'][0]['translation'],'你好')
+        self.assertEqual(record['cues'][0]['status'],'translated')
+        self.assertTrue(record['completed'])
+
     def test_cancel_after_load_releases_owned_model(self):
         class Socket:
             headers = {}
@@ -248,7 +313,7 @@ class AudioSocketTests(unittest.TestCase):
                 pcm = decode.call_args.args[0]
                 self.assertEqual(pcm.size, 25600)
                 np.testing.assert_allclose(pcm[:6400], 100 / 32768)
-                self.assertEqual(decode.call_args.kwargs, {'final': True, 'quality': 'accurate', 'vocabulary': 'DIALOGUE＋', 'model': unittest.mock.ANY})
+                self.assertEqual(decode.call_args.kwargs, {'final': True, 'quality': 'accurate', 'vocabulary': 'DIALOGUE＋', 'model': unittest.mock.ANY, 'language':'ja', 'with_language':True})
 
 
 if __name__ == "__main__":

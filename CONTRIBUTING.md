@@ -18,3 +18,9 @@ Backend tests use mocked inference and HTTP transports; they do not require a GP
 Model IDs and download repositories are allowlisted in `app/models.py`. Audio sessions lease the selected model. Inference consumes segment generators under the same lock that protects model switching. Lock waits and native loads run off the event loop. Never log or commit API keys, captured audio or browser settings.
 
 Record meaningful changes in `work_report/`, describe verification and remaining work, and create an appropriate Git commit.
+
+Languages live in `app/languages.py`; UI language choices must stay consistent with it. Japanese remains the migration default. Auto detection obtains the final Whisper language and uses it for the live API prompt; comment translation requires an explicit source for specialized Riva models.
+
+`app/transcripts.py` stores whole sessions in local SQLite, including independent final translation updates and playback anchors. Tests must use temporary databases and patch `app.main.transcripts`, never write fixtures into user recordings. The UI retains only 50 rows; storage must retain all cues. Export uses source media time, not delayed playback wall time. Web capture requires a manual origin because browser tab sharing does not expose the source player clock. ASS text neutralizes override syntax, and downloads include UTF-8 BOM for Windows editors.
+
+Do not publish `data/`, API settings or audio fixtures. Verify exported timestamps and Unicode independently with a subtitle parser when changing formatting. Browser extension management is a user-operated step when browser tooling forbids it; do not bypass the restriction.

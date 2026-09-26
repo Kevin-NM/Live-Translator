@@ -55,12 +55,12 @@ async function start(tabId) {
   recognition.previews = captions.mode === 'bilingual' || translation.provider === 'none';
   const delayMs = [0, 2000, 4000, 6000, 8000, 10000, 12000].includes(Number(storedDelay)) ? Number(storedDelay) : 2000;
   if (translation.provider !== 'none' && !translation.api_key && !translation.endpoint?.startsWith('http://localhost') && !translation.endpoint?.startsWith('http://127.0.0.1')) {
-    throw new Error('請先在設定頁儲存 API Key，或選「只顯示日文」。');
+    throw new Error('請先在設定頁儲存 API Key，或選「只辨識原文」。');
   }
   const response = await fetch('http://127.0.0.1:8788/api/status').catch(() => null);
   if (!response?.ok) throw new Error('本機字幕服務未啟動。請執行 start.bat。');
   const status = await response.json();
-  if (status.protocol_version !== 7) throw new Error('本機字幕服務仍是舊版。請關閉舊服務，再重新執行 start.bat。');
+  if (status.protocol_version !== 8) throw new Error('本機字幕服務仍是舊版。請關閉舊服務，再重新執行 start.bat。');
   await ensureOverlay(tabId, delayMs);
   // Must be called from a user-invoked extension action or side-panel click.
   let streamId;
@@ -168,7 +168,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       restoreSession().then(async () => {
         if (session?.id === message.id) {
           const event = message.event;
-          if (event.type === 'ready') session.state = 'running';
+          if (event.type === 'ready') {
+            session.state = 'running'; session.transcriptId = event.transcript_id;
+            if (event.transcript_id) await chrome.storage.local.set({lastTranscriptId:event.transcript_id});
+          }
+          if (event.type === 'timeline_request') {
+            const timeline = await chrome.tabs.sendMessage(session.tabId,{target:'overlay-v3',type:'video_timeline',epoch_ms:event.epoch_ms}).catch(() => null);
+            if (timeline?.ok) await chrome.runtime.sendMessage({target:'offscreen',type:'media_timeline',id:session.id,sample_ms:event.sample_ms,media_ms:timeline.media_ms,rate:timeline.rate});
+            sendResponse({ok:true}); return;
+          }
           if (event.type === 'capture_started') session.captureStarted = true;
           if (event.type === 'audio_clock') session.audioClockEpoch = event.start_epoch_ms;
           if (['ready', 'capture_started', 'audio_clock'].includes(event.type)) await saveSession();

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 import httpx
+from app.languages import LANGUAGES
 
 
 PRESETS = {
@@ -13,12 +14,7 @@ PRESETS = {
     "openai": ("https://api.openai.com/v1/chat/completions", "gpt-4.1-mini", "OPENAI_API_KEY"),
 }
 
-TARGET_LANGUAGES = {
-    "zh-TW": ("Traditional Chinese used in Taiwan", "繁體中文（台灣）"),
-    "zh-CN": ("Simplified Chinese", "简体中文"),
-    "en": ("English", "English"),
-    "ko": ("Korean", "한국어"),
-}
+TARGET_LANGUAGES = LANGUAGES
 
 
 @dataclass(frozen=True)
@@ -28,6 +24,8 @@ class TranslationConfig:
     model: str = ""
     api_key: str = ""
     target_language: str = "zh-TW"
+    source_language: str = "ja"
+    reply_language: str = "ja"
 
     @classmethod
     def from_payload(cls, payload: dict, require_key: bool = True) -> "TranslationConfig":
@@ -41,6 +39,10 @@ class TranslationConfig:
         model = str(payload.get("model") or default_model).strip()
         key = str(payload.get("api_key") or (os.getenv(env_name) if env_name else "") or "").strip()
         target_language = str(payload.get("target_language") or "zh-TW")
+        source_language = str(payload.get("source_language") or "ja")
+        reply_language = str(payload.get("reply_language") or "ja")
+        if source_language not in (*LANGUAGES, "auto") or reply_language not in LANGUAGES:
+            raise ValueError("不支援的來源或回覆語言")
         if target_language not in TARGET_LANGUAGES:
             raise ValueError("不支援的字幕目標語言")
         parsed = urlparse(endpoint)
@@ -50,23 +52,26 @@ class TranslationConfig:
             raise ValueError("請填入 API 網址與模型名稱")
         if require_key and not key and parsed.hostname not in ("localhost", "127.0.0.1"):
             raise ValueError("請填入 API Key")
-        return cls(provider, endpoint, model, key, target_language)
+        return cls(provider, endpoint, model, key, target_language, source_language, reply_language)
 
 
 async def translate(text: str, direction: str, config: TranslationConfig, style: str = "") -> str:
     if config.provider == "none":
         raise ValueError("請先選擇翻譯服務")
-    if direction == "ja-zh":
+    if direction in ("ja-zh", "source-target"):
+        source_code, target_code = config.source_language, config.target_language
         target_name, target_native = TARGET_LANGUAGES[config.target_language]
+        source_name = "the automatically detected language" if source_code == "auto" else LANGUAGES[source_code][0]
         instruction = (
-            f"Translate the Japanese source into {target_name} ({config.target_language}; {target_native}). "
+            f"Translate the source in {source_name} into {target_name} ({config.target_language}; {target_native}). "
             f"The entire answer must be in {target_name}. Preserve names, titles and tone. "
             "Output only the translation."
         )
         if config.target_language == "zh-TW":
             instruction += " Never answer in English. Examples: おめでとう！ → 恭喜！; 空気清浄機 → 空氣清淨機。"
-    elif direction == "zh-ja":
-        instruction = "將繁體中文改寫成自然的日文直播聊天室留言。準確保留原意，不憑空加入笑聲或 emoji。只輸出日文。"
+    elif direction in ("zh-ja", "reply"):
+        source_code, target_code = config.target_language, config.reply_language
+        instruction = f"Translate the user's message from {LANGUAGES[source_code][0]} into natural {LANGUAGES[target_code][0]} for a live chat. Preserve meaning; do not invent laughter or emoji. Output only the translation."
         if style.strip():
             instruction += f"\n使用者的留言習慣：{style.strip()[:1000]}"
     else:
@@ -76,8 +81,8 @@ async def translate(text: str, direction: str, config: TranslationConfig, style:
         headers["Authorization"] = f"Bearer {config.api_key}"
     riva = config.model.startswith("nvidia/riva-translate-")
     if riva:
-        target_code = config.target_language.lower() if direction == "ja-zh" else "ja"
-        source_code = "ja" if direction == "ja-zh" else "zh-tw"
+        if source_code == "auto": raise ValueError("Riva 留言翻譯請明確選擇來源語言；直播可由STT自動偵測")
+        target_code, source_code = target_code.lower(), source_code.lower()
         messages = [{"role": "system", "content": f"{source_code}-{target_code}"},
                     {"role": "user", "content": text[:4000]}]
     else:
@@ -110,6 +115,8 @@ async def translate(text: str, direction: str, config: TranslationConfig, style:
         return content.strip()
 
     async with httpx.AsyncClient(timeout=30) as client:
+        if riva and source_code == target_code:
+            return text.strip()
         if riva and source_code != "en" and target_code != "en":
             # Riva is trained/evaluated around English language pairs. Pivot rather
             # than interpreting an English response as the requested Chinese.
@@ -117,11 +124,12 @@ async def translate(text: str, direction: str, config: TranslationConfig, style:
             intermediate = await request(client, payload)
             payload["messages"] = [{"role": "system", "content": f"en-{target_code}"}, {"role": "user", "content": intermediate}]
         content = await request(client, payload)
-        if direction == "ja-zh" and config.target_language in ("zh-TW", "zh-CN") and len(content) >= 8 and re.search(r"[A-Za-z]", content) and not re.search(r"[\u4e00-\u9fff]", content):
+        if target_code.lower() in ("zh-tw", "zh-cn") and len(content) >= 8 and re.search(r"[A-Za-z]", content) and not re.search(r"[\u4e00-\u9fff]", content):
+            target_name, target_native = LANGUAGES[config.target_language if direction in ("ja-zh", "source-target") else config.reply_language]
             correction = (
                 f"The previous answer was in English: {content[:500]}\n"
-                f"Rewrite the Japanese source into {target_name} ({config.target_language}), using Chinese characters. "
-                f"Output only Chinese. Japanese source: {text[:4000]}"
+                f"Rewrite the source into {target_name}, using Chinese characters. "
+                f"Output only Chinese. Source: {text[:4000]}"
             )
             if riva:
                 raise ValueError(f"Riva 英文→{target_native}仍回傳非中文；請在設定確認模型版本與語言，或改用一般聊天模型")

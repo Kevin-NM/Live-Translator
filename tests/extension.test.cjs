@@ -5,14 +5,16 @@ const fs = require('node:fs');
 const path = require('node:path');
 const source = name => fs.readFileSync(path.join(__dirname, '../chrome-extension', name), 'utf8');
 
-function worker({missing = false, prepared = true, version = 7} = {}) {
+function worker({missing = false, prepared = true, version = 8} = {}) {
   const calls = [];
+  const payloads = [];
   let listener;
   const chrome = {
-    storage: {local: {get: async () => ({translation: {provider: 'none'}, delayMs: 2000})}, session: {get: async () => ({}), set: async () => {}, remove: async () => {}}},
-    runtime: {onMessage: {addListener: fn => listener = fn}, getURL: x => x, getContexts: async () => [{}], sendMessage: async m => {calls.push(m.type); return {ok: true};}},
+    storage: {local: {get: async () => ({translation: {provider: 'none'}, delayMs: 2000}), set: async () => {}}, session: {get: async () => ({}), set: async () => {}, remove: async () => {}}},
+    runtime: {onMessage: {addListener: fn => listener = fn}, getURL: x => x, getContexts: async () => [{}], sendMessage: async m => {calls.push(m.type); payloads.push(m); return {ok: true};}},
     tabs: {get: async () => ({url: 'https://www.youtube.com/watch?v=test'}), onRemoved: {addListener() {}}, sendMessage: async (_, m) => {
       calls.push(m.type);
+      if (m.type === 'video_timeline') return {ok: true, media_ms: 120000, rate: 1.5};
       if (m.type === 'ping' && missing) throw Error('No receiver');
       return {ok: m.type !== 'prepare' || prepared, error: 'hidden layer'};
     }},
@@ -22,7 +24,7 @@ function worker({missing = false, prepared = true, version = 7} = {}) {
   };
   vm.runInNewContext(source('background.js'), {chrome, crypto: {randomUUID: () => 'id'}, fetch: async () => ({ok: true, json: async () => ({protocol_version: version})})});
   const send = m => new Promise(resolve => listener({target: 'worker', ...m}, {}, resolve));
-  return {calls, send};
+  return {calls, payloads, send};
 }
 
 test('existing YouTube tab gets injection before capture when receiver is missing', async () => {
@@ -85,12 +87,12 @@ function overlay() {
     getContext() {return {drawImage() {}};}
   }
   const player = new Element();
-  const video = {parentElement: player, readyState: 4, videoWidth: 640, videoHeight: 360, requestVideoFrameCallback: fn => {frameCallback = fn; return 1;}, cancelVideoFrameCallback() {}, addEventListener: (name, fn) => events[name] = fn, removeEventListener: name => delete events[name]};
+  const video = {currentTime: 120, playbackRate: 2, paused: false, parentElement: player, readyState: 4, videoWidth: 640, videoHeight: 360, requestVideoFrameCallback: fn => {frameCallback = fn; return 1;}, cancelVideoFrameCallback() {}, addEventListener: (name, fn) => events[name] = fn, removeEventListener: name => delete events[name]};
   const document = {querySelector: name => name === '.html5-video-player' ? player : video, createElement: () => {const e = new Element(); elements.push(e); return e;}, elementFromPoint: () => player.children.at(-1)};
   const chrome = {runtime: {onMessage: {addListener: fn => listener = fn}, sendMessage: async m => {messages.push(m); return {session: null};}}};
   vm.runInNewContext(source('content.js'), {document, chrome, setInterval: () => 1, clearInterval() {}, requestAnimationFrame: fn => {paintCallback = fn; return 1;}, cancelAnimationFrame() {}, Date: {now: () => now}});
   const send = m => {let response; listener({target: 'overlay-v3', ...m}, {}, value => response = value); return response;};
-  return {send, player, elements, events, messages, tick: () => {now += 50; frameCallback?.(now); paintCallback?.();}};
+  return {send, player, video, elements, events, messages, tick: () => {now += 50; frameCallback?.(now); paintCallback?.();}};
 }
 test('video canvas and captions share the top overlay; activation acknowledges visible canvas', () => {
   const o = overlay();
@@ -152,4 +154,27 @@ test('twelve-second delay bounds total canvas pixels instead of doubling memory'
   const usedBytes = o.elements.filter(e => e.width > 0).reduce((sum, e) => sum + e.width * e.height * 4, 0);
   assert.ok(usedBytes < 150 * 1024 * 1024, `canvas memory ${usedBytes}`);
   assert.ok(o.player.children[0].shadow.children[0].width < 640);
+});
+
+test('media timeline compensates message age and respects paused video', () => {
+  const o = overlay();
+  const playing = o.send({type: 'video_timeline', epoch_ms: 99500});
+  assert.equal(playing.media_ms, 119000);
+  assert.equal(playing.rate, 2);
+  o.video.paused = true;
+  const paused = o.send({type: 'video_timeline', epoch_ms: 99500});
+  assert.equal(paused.media_ms, 120000);
+  assert.equal(paused.rate, 0);
+});
+test('timeline anchors bridge only the active capture to its source player', async () => {
+  const w = worker();
+  await w.send({type: 'start', tabId: 1});
+  await w.send({type: 'event', id: 'wrong', event: {type: 'timeline_request', sample_ms: 1000, epoch_ms: 100000}});
+  assert.equal(w.payloads.filter(m => m.type === 'media_timeline').length, 0);
+  await w.send({type: 'event', id: 'id', event: {type: 'timeline_request', sample_ms: 1000, epoch_ms: 100000}});
+  const anchor = w.payloads.find(m => m.type === 'media_timeline');
+  assert.equal(anchor.id, 'id');
+  assert.equal(anchor.sample_ms, 1000);
+  assert.equal(anchor.media_ms, 120000);
+  assert.equal(anchor.rate, 1.5);
 });

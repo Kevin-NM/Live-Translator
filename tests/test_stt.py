@@ -8,6 +8,15 @@ from app.models import model_dir
 
 
 class DecodeSettingsTests(unittest.TestCase):
+    def test_other_language_and_auto_detection_metadata(self):
+        model=Mock()
+        model.transcribe.return_value=([SimpleNamespace(text='Hello')],SimpleNamespace(language='en'))
+        self.assertEqual(transcribe_pcm(np.ones(16000),model=model,language='auto',with_language=True),('Hello','en'))
+        self.assertIsNone(model.transcribe.call_args.kwargs['language'])
+        transcribe_pcm(np.ones(16000),model=model,language='ko')
+        self.assertEqual(model.transcribe.call_args.kwargs['language'],'ko')
+        transcribe_pcm(np.ones(16000),model=model,language='zh-TW')
+        self.assertEqual(model.transcribe.call_args.kwargs['language'],'zh')
     def test_final_uses_accurate_decode_and_vocabulary(self):
         model = Mock()
         model.transcribe.return_value = ([SimpleNamespace(text='テスト')], None)

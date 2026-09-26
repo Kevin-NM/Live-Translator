@@ -8,6 +8,7 @@ from faster_whisper import WhisperModel
 
 
 from app.models import DEFAULT_MODEL, model_dir, model_ready
+from app.languages import whisper_language
 
 ROOT = Path(__file__).resolve().parent.parent
 MODEL_DIR = model_dir(DEFAULT_MODEL)
@@ -53,17 +54,17 @@ def release_model() -> None:
         _leases = max(0, _leases - 1)
 
 
-def transcribe_pcm(audio: np.ndarray, *, final: bool = False, quality: str = "accurate", vocabulary: str = "", model=None) -> str:
+def transcribe_pcm(audio: np.ndarray, *, final: bool = False, quality: str = "accurate", vocabulary: str = "", model=None, language="ja", with_language=False):
     if audio.size < 8000:
         return ""
     with _lock:
-        return _decode(audio, final=final, quality=quality, vocabulary=vocabulary, model=model or get_model())
+        return _decode(audio, final=final, quality=quality, vocabulary=vocabulary, model=model or get_model(), language=language, with_language=with_language)
 
 
-def _decode(audio, *, final, quality, vocabulary, model):
-    segments, _ = model.transcribe(
+def _decode(audio, *, final, quality, vocabulary, model, language, with_language):
+    segments, info = model.transcribe(
         audio.astype(np.float32, copy=False),
-        language="ja",
+        language=whisper_language(language),
         task="transcribe",
         beam_size=5 if final and quality == "accurate" else 1,
         temperature=0,
@@ -73,4 +74,5 @@ def _decode(audio, *, final, quality, vocabulary, model):
         vad_parameters={"min_silence_duration_ms": 700, "speech_pad_ms": 300},
         without_timestamps=True,
     )
-    return "".join(segment.text for segment in segments).strip()
+    text = "".join(segment.text for segment in segments).strip()
+    return (text, getattr(info, "language", None)) if with_language else text

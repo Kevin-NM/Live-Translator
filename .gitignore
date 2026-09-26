@@ -9,3 +9,4 @@ __pycache__/
 *.log
 dist/
 .DS_Store
+data/

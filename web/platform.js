@@ -22,7 +22,7 @@
     if (finish && session.socket?.readyState === WebSocket.OPEN) {
       emit({type: 'state', state: 'stopping'});
       session.socket.send(JSON.stringify({type: 'eos'}));
-      session.timer = setTimeout(() => release(session), 30000);
+      session.timer = setTimeout(() => release(session), 90000);
       return;
     }
     session.closed = true;
@@ -37,9 +37,10 @@
       if (!session.stream?.getAudioTracks().length) throw new Error('未取得音訊，請選擇 Chrome 分頁並勾選「分享分頁音訊」。');
       session.stream.getTracks().forEach(track => track.addEventListener('ended', () => {if (!session.stopping) release(session, true);}));
       const settings = await storage.get(['translation', 'recognition']);
+      platform.previewStream = session.stream;
       const translation = settings.translation || {provider: 'none'};
       if (translation.provider !== 'none' && !translation.api_key && !translation.endpoint?.startsWith('http://localhost') && !translation.endpoint?.startsWith('http://127.0.0.1')) {
-        throw new Error('請先在「模型與設定」儲存直播 API Key，或選擇只辨識日文。');
+        throw new Error('請先在「模型與設定」儲存直播 API Key，或選擇只辨識原文。');
       }
       session.context = new AudioContext();
       await session.context.audioWorklet.addModule('/static/audio-worklet.js');
@@ -52,12 +53,12 @@
       const socket = session.socket = new WebSocket(location.origin.replace(/^http/, 'ws') + '/ws/audio');
       socket.binaryType = 'arraybuffer';
       session.timer = setTimeout(() => {emit({type: 'error', message: '本機模型載入逾時，請檢查服務視窗。'}); release(session);}, 120000);
-      socket.onopen = () => socket.send(JSON.stringify({translation: settings.translation || {provider: 'none'}, recognition: {...settings.recognition, previews: false}}));
+      socket.onopen = () => socket.send(JSON.stringify({translation: settings.translation || {provider: 'none'}, recognition: {...settings.recognition, previews: false},timeline:platform.pendingTimeline || {offset_ms:0,rate:1}}));
       socket.onmessage = message => {
         try {
           const event = JSON.parse(message.data);
           if (event.type === 'error') session.error = event.message;
-          if (event.type === 'ready') {session.ready = true; session.state = 'running'; clearTimeout(session.timer);}
+          if (event.type === 'ready') {session.ready = true; session.state = 'running'; clearTimeout(session.timer); if(event.transcript_id) storage.set({lastTranscriptId:event.transcript_id}).catch(() => {});}
           emit(event);
         } catch {emit({type: 'error', message: '本機服務回傳無效資料'}); release(session);}
       };

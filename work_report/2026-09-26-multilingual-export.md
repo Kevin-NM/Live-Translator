@@ -35,4 +35,10 @@ AI Router aggressive：提供聚焦、無敏感資料的匯出／語言方案審
 
 更新需 restart start.bat、reload 0.7.0 擴充功能並刷新 YouTube。建議以固定影片從非零起點測試匯出／播放器回放（暫停、倍速各一次），再驗證長場記憶體與 SQLite 保存，勿先修改同步常數掩蓋 GPU 吞吐問題。其他產品缺口：自動聊天室接入／個人風格學習、轉錄管理／刪除 UI、模型背景下載。
 
-GitHub 推送、CI 與 release 實際結果於發布後追加。
+## 發布完成
+
+功能提交 `fa2a336b46d07d24ad4f57754d4dd7dd1daf2490` 已推送 origin/master。GitHub CI run `36237112638` 成功，確認乾淨 Linux Python 3.11／Node 22 的安裝、Web 產生檔檢查、32 項 Python／16 項 Node 測試全數通過。發布前掃描 405 個歷史物件與 43 個發布檔案，無常見 credential-pattern 命中；轉錄、models、venv、tmp 沒有納入公開檔案。
+
+公開非 draft release：https://github.com/Kevin-NM/Live-Translator/releases/tag/v0.7.0 ，tag 指向上述已驗證功能提交。`Live-Translator-v0.7.0.zip`（102285 bytes）與 `Live-Translator-Chrome-v0.7.0.zip`（25193 bytes）均 uploaded，API 已確認名稱、大小與公開下載 URL。ZIP 逐項驗證不含 data／models／venv／tmp／env，manifest 版本為 0.7.0。完整專案保留 work_report，API Key 與模型由使用者自己保存。
+
+本輪使用者授權的開發、GitHub 推送與 0.7.0 發布已完成。上述尚未實測的音訊品質／長場同步是後續驗證方向，不是發布動作未完成；更新操作仍由使用者 restart／reload 完成，工具不得繞過 extensions 管理限制。

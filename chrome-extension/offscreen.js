@@ -54,7 +54,7 @@ async function start(message) {
     emit(active.id, {type: 'capture_started', delay_ms: message.delayMs});
     active.socket = new WebSocket('ws://127.0.0.1:8788/ws/audio');
     active.socket.binaryType = 'arraybuffer';
-    active.socket.onopen = () => active.socket.send(JSON.stringify({translation: message.translation}));
+    active.socket.onopen = () => active.socket.send(JSON.stringify({translation: message.translation, recognition: message.recognition}));
     active.socket.onmessage = event => {
       if (active.closed) return;
       try {

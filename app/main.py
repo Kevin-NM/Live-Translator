@@ -16,7 +16,7 @@ from app.translation import PRESETS, TranslationConfig, translate
 
 
 ROOT = Path(__file__).resolve().parent.parent
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 app = FastAPI(title="Live Translator")
 app.mount("/static", StaticFiles(directory=ROOT / "web"), name="static")
 
@@ -68,7 +68,13 @@ async def audio_socket(ws: WebSocket):
 
     try:
         first = await ws.receive_text()
-        config = TranslationConfig.from_payload(json.loads(first).get("translation", {}), require_key=False)
+        settings = json.loads(first)
+        config = TranslationConfig.from_payload(settings.get("translation", {}), require_key=False)
+        recognition = settings.get("recognition", {})
+        quality = recognition.get("quality", "accurate")
+        if quality not in ("accurate", "fast"):
+            raise ValueError("不支援的辨識模式")
+        vocabulary = str(recognition.get("vocabulary", ""))[:500]
         await send({"type": "status", "message": "載入本機 GPU 語音模型…"})
         await asyncio.to_thread(get_model)
         await send({"type": "ready"})
@@ -88,6 +94,7 @@ async def audio_socket(ws: WebSocket):
     total_samples = 0
     utterance_start_sample = 0
     last_voice_sample = 0
+    pre_roll = np.empty(0, dtype=np.float32)
 
     async def finalise():
         nonlocal audio, samples, silence, has_voice, last_decode_samples, sequence
@@ -95,7 +102,7 @@ async def audio_socket(ws: WebSocket):
             sequence += 1
             current = sequence
             combined = np.concatenate(audio)
-            result = await asyncio.to_thread(transcribe_pcm, combined)
+            result = await asyncio.to_thread(transcribe_pcm, combined, final=True, quality=quality, vocabulary=vocabulary)
             if result:
                 start_ms = round(utterance_start_sample / 16)
                 end_ms = round(last_voice_sample / 16)
@@ -142,17 +149,22 @@ async def audio_socket(ws: WebSocket):
             rms = float(np.sqrt(np.mean(chunk * chunk)))
             voice = rms >= 0.012
             if not has_voice and not voice:
+                pre_roll = np.concatenate((pre_roll, chunk))[-6400:]
                 continue
             if not has_voice:
                 utterance_start_sample = total_samples - chunk.size
+                if pre_roll.size:
+                    audio.append(pre_roll)
+                    samples += pre_roll.size
+                    pre_roll = np.empty(0, dtype=np.float32)
             if voice:
                 last_voice_sample = total_samples
             has_voice = has_voice or voice
             audio.append(chunk)
             samples += chunk.size
             silence = 0 if voice else silence + chunk.size
-            if samples >= 12800 and samples - last_decode_samples >= 12800 and silence < 9600:
-                result = await asyncio.to_thread(transcribe_pcm, np.concatenate(audio))
+            if samples >= 25600 and samples - last_decode_samples >= 25600 and silence < 9600:
+                result = await asyncio.to_thread(transcribe_pcm, np.concatenate(audio), quality=quality, vocabulary=vocabulary)
                 if result:
                     await send({"type": "partial", "text": result, "start_ms": round(utterance_start_sample / 16), "end_ms": round(total_samples / 16)})
                 last_decode_samples = samples

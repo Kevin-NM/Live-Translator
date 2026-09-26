@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const source = name => fs.readFileSync(path.join(__dirname, '../chrome-extension', name), 'utf8');
 
-function worker({missing = false, prepared = true, version = 4} = {}) {
+function worker({missing = false, prepared = true, version = 5} = {}) {
   const calls = [];
   let listener;
   const chrome = {

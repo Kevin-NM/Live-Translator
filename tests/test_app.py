@@ -28,7 +28,7 @@ class TranslationSettingsTests(unittest.TestCase):
         self.assertEqual(calls[1]['messages'][1]['content'], 'Congratulations!')
 
     def test_protocol_version(self):
-        self.assertEqual(TestClient(app).get('/api/status').json()['protocol_version'], 4)
+        self.assertEqual(TestClient(app).get('/api/status').json()['protocol_version'], 5)
 
     def test_target_language_selection_and_riva_payload(self):
         calls = []
@@ -126,12 +126,12 @@ class AudioSocketTests(unittest.TestCase):
                 ws.send_json({"translation": {"provider": "none"}})
                 ws.receive_json(); ws.receive_json()
                 for _ in range(2): ws.send_bytes(silence)
-                for _ in range(4): ws.send_bytes(voice)
+                for _ in range(6): ws.send_bytes(voice)
                 partial = ws.receive_json()
-                self.assertEqual((partial["start_ms"], partial["end_ms"]), (400, 1200))
+                self.assertEqual((partial["start_ms"], partial["end_ms"]), (400, 1600))
                 ws.send_json({"type": "eos"})
                 final = ws.receive_json()
-                self.assertEqual((final["start_ms"], final["end_ms"]), (400, 1200))
+                self.assertEqual((final["start_ms"], final["end_ms"]), (400, 1600))
 
     def test_extension_origin_can_connect(self):
         with patch("app.main.get_model", return_value=object()):
@@ -148,15 +148,32 @@ class AudioSocketTests(unittest.TestCase):
                 ws.send_json({"translation": {"provider": "none"}})
                 self.assertEqual(ws.receive_json()["type"], "status")
                 self.assertEqual(ws.receive_json()["type"], "ready")
-                for _ in range(6):
+                for _ in range(8):
                     ws.send_bytes(packet)
                 partial = ws.receive_json()
-                self.assertEqual(partial, {"type": "partial", "text": "こんにちは", "start_ms": 0, "end_ms": 800})
+                self.assertEqual(partial, {"type": "partial", "text": "こんにちは", "start_ms": 0, "end_ms": 1600})
                 ws.send_json({"type": "eos"})
                 final = ws.receive_json()
                 self.assertEqual(final["type"], "final")
                 self.assertEqual(final["text"], "こんにちは")
-                self.assertEqual((final["start_ms"], final["end_ms"]), (0, 1200))
+                self.assertEqual((final["start_ms"], final["end_ms"]), (0, 1600))
+
+    def test_preroll_preserves_quiet_onset_and_recognition_settings(self):
+        quiet = np.full(3200, 100, dtype='<i2').tobytes()
+        voice = np.full(3200, 9000, dtype='<i2').tobytes()
+        with patch('app.main.get_model', return_value=object()), patch('app.main.transcribe_pcm', return_value='テスト') as decode:
+            with TestClient(app).websocket_connect('/ws/audio') as ws:
+                ws.send_json({'translation': {'provider': 'none'}, 'recognition': {'quality': 'accurate', 'vocabulary': 'DIALOGUE＋'}})
+                ws.receive_json(); ws.receive_json()
+                for _ in range(4): ws.send_bytes(quiet)
+                for _ in range(6): ws.send_bytes(voice)
+                ws.receive_json()
+                ws.send_json({'type': 'eos'})
+                ws.receive_json()
+                pcm = decode.call_args.args[0]
+                self.assertEqual(pcm.size, 25600)
+                np.testing.assert_allclose(pcm[:6400], 100 / 32768)
+                self.assertEqual(decode.call_args.kwargs, {'final': True, 'quality': 'accurate', 'vocabulary': 'DIALOGUE＋'})
 
 
 if __name__ == "__main__":

@@ -26,16 +26,19 @@ def get_model() -> WhisperModel:
         return _model
 
 
-def transcribe_pcm(audio: np.ndarray) -> str:
+def transcribe_pcm(audio: np.ndarray, *, final: bool = False, quality: str = "accurate", vocabulary: str = "") -> str:
     if audio.size < 8000:
         return ""
     segments, _ = get_model().transcribe(
         audio.astype(np.float32, copy=False),
         language="ja",
         task="transcribe",
-        beam_size=1,
+        beam_size=5 if final and quality == "accurate" else 1,
+        temperature=0,
+        initial_prompt=vocabulary.strip()[:500] or None,
         condition_on_previous_text=False,
-        vad_filter=False,
+        vad_filter=final and quality == "accurate",
+        vad_parameters={"min_silence_duration_ms": 700, "speech_pad_ms": 300},
         without_timestamps=True,
     )
     return "".join(segment.text for segment in segments).strip()

@@ -32,7 +32,7 @@ function config() {
 }
 
 async function save() {
-  await chrome.storage.local.set({translation: config(), style: $('style').value, delayMs: Number($('delay-ms').value)});
+  await chrome.storage.local.set({translation: config(), recognition: {quality: $('stt-quality').value, vocabulary: $('stt-vocabulary').value.trim()}, style: $('style').value, delayMs: Number($('delay-ms').value)});
   $('settings-result').textContent = '已儲存到這台電腦的 Chrome。';
   $('settings-result').classList.remove('error');
 }
@@ -93,7 +93,7 @@ async function checkService() {
   const response = await fetch('http://127.0.0.1:8788/api/status');
   if (!response.ok) throw new Error('無法連線到本機服務');
   const data = await response.json();
-  if (data.protocol_version !== 4) throw new Error('本機服務仍是舊版，請關閉舊服務並重新執行 start.bat');
+  if (data.protocol_version !== 5) throw new Error('本機服務仍是舊版，請關閉舊服務並重新執行 start.bat');
   return data;
 }
 $('test-translation').addEventListener('click', async () => {
@@ -123,13 +123,15 @@ $('translate-outgoing').addEventListener('click', () => translateText('outgoing'
 $('copy-outgoing').addEventListener('click', () => navigator.clipboard.writeText($('outgoing-result').textContent));
 
 (async () => {
-  const saved = await chrome.storage.local.get(['translation', 'style', 'delayMs']);
+  const saved = await chrome.storage.local.get(['translation', 'recognition', 'style', 'delayMs']);
   const translation = saved.translation || {provider: 'nvidia'};
   $('provider').value = translation.provider || 'nvidia';
   $('endpoint').value = translation.endpoint || defaults[translation.provider]?.endpoint || '';
   $('model').value = translation.model || defaults[translation.provider]?.model || '';
   $('api-key').value = translation.api_key || '';
   $('style').value = saved.style || '';
+  $('stt-quality').value = saved.recognition?.quality || 'accurate';
+  $('stt-vocabulary').value = saved.recognition?.vocabulary || '';
   $('target-language').value = translation.target_language || 'zh-TW';
   $('delay-ms').value = String(saved.delayMs ?? 2000);
   providerChanged(false);
@@ -138,6 +140,6 @@ $('copy-outgoing').addEventListener('click', () => navigator.clipboard.writeText
   const state = await chrome.runtime.sendMessage({target: 'worker', type: 'getState'});
   showEvent({type: 'state', state: state?.session?.state || 'stopped'});
   checkService().then(data => {
-    $('model-state').textContent = `擴充功能 0.3.1 · ${data.model_ready ? '本機模型已就緒' : '模型尚未下載'}`;
+    $('model-state').textContent = `擴充功能 0.4.0 · ${data.model_ready ? '本機模型已就緒' : '模型尚未下載'}`;
   }).catch(error => { $('model-state').textContent = `服務檢查失敗：${error.message}`; });
 })();

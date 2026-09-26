@@ -13,6 +13,13 @@ PRESETS = {
     "openai": ("https://api.openai.com/v1/chat/completions", "gpt-4.1-mini", "OPENAI_API_KEY"),
 }
 
+TARGET_LANGUAGES = {
+    "zh-TW": ("Traditional Chinese used in Taiwan", "繁體中文（台灣）"),
+    "zh-CN": ("Simplified Chinese", "简体中文"),
+    "en": ("English", "English"),
+    "ko": ("Korean", "한국어"),
+}
+
 
 @dataclass(frozen=True)
 class TranslationConfig:
@@ -20,6 +27,7 @@ class TranslationConfig:
     endpoint: str = ""
     model: str = ""
     api_key: str = ""
+    target_language: str = "zh-TW"
 
     @classmethod
     def from_payload(cls, payload: dict, require_key: bool = True) -> "TranslationConfig":
@@ -32,6 +40,9 @@ class TranslationConfig:
         endpoint = default_endpoint if provider in PRESETS else str(payload.get("endpoint") or "").strip()
         model = str(payload.get("model") or default_model).strip()
         key = str(payload.get("api_key") or (os.getenv(env_name) if env_name else "") or "").strip()
+        target_language = str(payload.get("target_language") or "zh-TW")
+        if target_language not in TARGET_LANGUAGES:
+            raise ValueError("不支援的字幕目標語言")
         parsed = urlparse(endpoint)
         if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1")):
             raise ValueError("API 網址必須是 HTTPS，或本機 HTTP")
@@ -39,18 +50,21 @@ class TranslationConfig:
             raise ValueError("請填入 API 網址與模型名稱")
         if require_key and not key and parsed.hostname not in ("localhost", "127.0.0.1"):
             raise ValueError("請填入 API Key")
-        return cls(provider, endpoint, model, key)
+        return cls(provider, endpoint, model, key, target_language)
 
 
 async def translate(text: str, direction: str, config: TranslationConfig, style: str = "") -> str:
     if config.provider == "none":
         raise ValueError("請先選擇翻譯服務")
     if direction == "ja-zh":
+        target_name, target_native = TARGET_LANGUAGES[config.target_language]
         instruction = (
-            "Translate the Japanese source into Traditional Chinese used in Taiwan (zh-TW). "
-            "The entire answer must be in Traditional Chinese, never English. Preserve names, titles and tone. "
-            "Output only the translation. Examples: おめでとう！ → 恭喜！; 空気清浄機 → 空氣清淨機。"
+            f"Translate the Japanese source into {target_name} ({config.target_language}; {target_native}). "
+            f"The entire answer must be in {target_name}. Preserve names, titles and tone. "
+            "Output only the translation."
         )
+        if config.target_language == "zh-TW":
+            instruction += " Never answer in English. Examples: おめでとう！ → 恭喜！; 空気清浄機 → 空氣清淨機。"
     elif direction == "zh-ja":
         instruction = "將繁體中文改寫成自然的日文直播聊天室留言。準確保留原意，不憑空加入笑聲或 emoji。只輸出日文。"
         if style.strip():
@@ -60,7 +74,14 @@ async def translate(text: str, direction: str, config: TranslationConfig, style:
     headers = {"Content-Type": "application/json"}
     if config.api_key:
         headers["Authorization"] = f"Bearer {config.api_key}"
-    messages = ([{"role": "user", "content": f"{instruction}\n\n原文：\n{text[:4000]}"}]
+    riva = config.model.startswith("nvidia/riva-translate-")
+    if riva:
+        target_code = config.target_language.lower() if direction == "ja-zh" else "ja"
+        source_code = "ja" if direction == "ja-zh" else "zh-tw"
+        messages = [{"role": "system", "content": f"{source_code}-{target_code}"},
+                    {"role": "user", "content": text[:4000]}]
+    else:
+        messages = ([{"role": "user", "content": f"{instruction}\n\n原文：\n{text[:4000]}"}]
                 if config.provider == "nvidia" else
                 [{"role": "system", "content": instruction}, {"role": "user", "content": text[:4000]}])
     payload = {
@@ -90,15 +111,15 @@ async def translate(text: str, direction: str, config: TranslationConfig, style:
 
     async with httpx.AsyncClient(timeout=30) as client:
         content = await request(client, payload)
-        if direction == "ja-zh" and len(content) >= 8 and re.search(r"[A-Za-z]", content) and not re.search(r"[\u4e00-\u9fff]", content):
+        if direction == "ja-zh" and config.target_language in ("zh-TW", "zh-CN") and len(content) >= 8 and re.search(r"[A-Za-z]", content) and not re.search(r"[\u4e00-\u9fff]", content):
             correction = (
                 f"The previous answer was in English: {content[:500]}\n"
-                "Rewrite the Japanese source into Traditional Chinese (Taiwan), using Chinese characters. "
+                f"Rewrite the Japanese source into {target_name} ({config.target_language}), using Chinese characters. "
                 f"Output only Chinese. Japanese source: {text[:4000]}"
             )
-            payload["messages"] = ([{"role": "user", "content": correction}] if config.provider == "nvidia" else
+            payload["messages"] = messages if riva else ([{"role": "user", "content": correction}] if config.provider == "nvidia" else
                                    [{"role": "system", "content": instruction}, {"role": "user", "content": correction}])
             content = await request(client, payload)
             if len(content) >= 8 and re.search(r"[A-Za-z]", content) and not re.search(r"[\u4e00-\u9fff]", content):
-                raise ValueError("翻譯服務未輸出繁體中文，請更換模型或調整設定")
+                raise ValueError(f"翻譯服務未輸出{target_native}，請更換模型或調整設定")
     return content

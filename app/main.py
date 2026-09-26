@@ -16,6 +16,7 @@ from app.translation import PRESETS, TranslationConfig, translate
 
 
 ROOT = Path(__file__).resolve().parent.parent
+PROTOCOL_VERSION = 3
 app = FastAPI(title="Live Translator")
 app.mount("/static", StaticFiles(directory=ROOT / "web"), name="static")
 
@@ -35,7 +36,7 @@ async def index():
 @app.get("/api/status")
 async def status():
     model = MODEL_DIR / "model.bin"
-    return {"model_ready": model.exists() and model.stat().st_size > 0, "presets": {key: {"endpoint": value[0], "model": value[1]} for key, value in PRESETS.items()}}
+    return {"model_ready": model.exists() and model.stat().st_size > 0, "protocol_version": PROTOCOL_VERSION, "presets": {key: {"endpoint": value[0], "model": value[1]} for key, value in PRESETS.items()}}
 
 
 @app.post("/api/translate")

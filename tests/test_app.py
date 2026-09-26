@@ -12,6 +12,26 @@ from app.translation import TranslationConfig, translate
 
 
 class TranslationSettingsTests(unittest.TestCase):
+    def test_protocol_version(self):
+        self.assertEqual(TestClient(app).get('/api/status').json()['protocol_version'], 3)
+
+    def test_target_language_selection_and_riva_payload(self):
+        calls = []
+        def handler(request):
+            calls.append(json.loads(request.content))
+            return httpx.Response(200, json={"choices": [{"message": {"content": "Congratulations!"}}]})
+        real_client = httpx.AsyncClient
+        with patch("app.translation.httpx.AsyncClient", side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(handler))):
+            config = TranslationConfig.from_payload({"provider": "nvidia", "api_key": "test", "target_language": "en"})
+            self.assertEqual(asyncio.run(translate("おめでとう", "ja-zh", config)), "Congratulations!")
+            self.assertEqual(len(calls), 1)
+            self.assertIn("English", calls[0]["messages"][0]["content"])
+            config = TranslationConfig.from_payload({"provider": "nvidia", "api_key": "test", "model": "nvidia/riva-translate-4b-instruct-v2", "target_language": "en"})
+            asyncio.run(translate("おめでとう", "ja-zh", config))
+            self.assertEqual(calls[1]["messages"], [{"role": "system", "content": "ja-en"}, {"role": "user", "content": "おめでとう"}])
+        with self.assertRaisesRegex(ValueError, "目標語言"):
+            TranslationConfig.from_payload({"provider": "nvidia", "api_key": "test", "target_language": "unknown"})
+
     def test_presets_and_custom_local_endpoint(self):
         nvidia = TranslationConfig.from_payload({"provider": "nvidia", "api_key": "test"})
         self.assertEqual(nvidia.endpoint, "https://integrate.api.nvidia.com/v1/chat/completions")

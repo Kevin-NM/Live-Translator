@@ -38,6 +38,8 @@ async function start(message) {
     active.context = new AudioContext();
     await active.context.audioWorklet.addModule('audio-worklet.js');
     active.source = active.context.createMediaStreamSource(active.stream);
+    const visual = await chrome.runtime.sendMessage({target: 'worker', type: 'activate_visual', id: active.id, delay_ms: message.delayMs});
+    if (!visual?.ok) throw new Error(visual?.error || 'YouTube 畫面延遲未準備好，已取消音訊擷取');
     // tabCapture mutes the tab. The STT branch stays immediate; only listening is delayed.
     if (message.delayMs > 0) {
       active.delay = active.context.createDelay(8);

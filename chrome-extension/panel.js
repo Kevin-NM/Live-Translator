@@ -27,6 +27,7 @@ function config() {
   return {
     provider: $('provider').value, endpoint: $('endpoint').value.trim(),
     model: $('model').value.trim(), api_key: $('api-key').value.trim(),
+    target_language: $('target-language').value,
   };
 }
 
@@ -72,6 +73,7 @@ async function translateText(source, direction, destination) {
   $(destination).textContent = '翻譯中…';
   $(destination).classList.remove('error');
   try {
+    await checkService();
     const response = await fetch('http://127.0.0.1:8788/api/translate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({text, direction, style: $('style').value, translation: config()})});
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
@@ -86,9 +88,18 @@ async function translateText(source, direction, destination) {
 chrome.runtime.onMessage.addListener(message => { if (message.target === 'panel') showEvent(message); });
 $('provider').addEventListener('change', () => providerChanged());
 $('save').addEventListener('click', save);
+$('target-language').addEventListener('change', save);
+async function checkService() {
+  const response = await fetch('http://127.0.0.1:8788/api/status');
+  if (!response.ok) throw new Error('無法連線到本機服務');
+  const data = await response.json();
+  if (data.protocol_version !== 3) throw new Error('本機服務仍是舊版，請關閉舊服務並重新執行 start.bat');
+  return data;
+}
 $('test-translation').addEventListener('click', async () => {
   await save();
   try {
+    await checkService();
     const response = await fetch('http://127.0.0.1:8788/api/translate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({text: 'こんにちは', direction: 'ja-zh', translation: config()})});
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
@@ -99,6 +110,7 @@ $('test-translation').addEventListener('click', async () => {
   }
 });
 $('start').addEventListener('click', async () => {
+  await save();
   const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
   currentTabId = tab?.id || null;
   if (!currentTabId) return showEvent({type: 'state', state: 'stopped', error: '請先切換到 YouTube 分頁。'});
@@ -118,13 +130,14 @@ $('copy-outgoing').addEventListener('click', () => navigator.clipboard.writeText
   $('model').value = translation.model || defaults[translation.provider]?.model || '';
   $('api-key').value = translation.api_key || '';
   $('style').value = saved.style || '';
+  $('target-language').value = translation.target_language || 'zh-TW';
   $('delay-ms').value = String(saved.delayMs ?? 2000);
   providerChanged(false);
   const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
   currentTabId = tab?.id || null;
   const state = await chrome.runtime.sendMessage({target: 'worker', type: 'getState'});
   showEvent({type: 'state', state: state?.session?.state || 'stopped'});
-  fetch('http://127.0.0.1:8788/api/status').then(response => response.json()).then(data => {
-    $('model-state').textContent = data.model_ready ? '本機模型已就緒' : '模型尚未下載';
-  }).catch(() => { $('model-state').textContent = '本機服務未啟動'; });
+  checkService().then(data => {
+    $('model-state').textContent = `擴充功能 0.3.0 · ${data.model_ready ? '本機模型已就緒' : '模型尚未下載'}`;
+  }).catch(error => { $('model-state').textContent = `服務檢查失敗：${error.message}`; });
 })();

@@ -8,7 +8,7 @@ Chrome 擴充功能擷取 YouTube 分頁音訊，本機 Whisper `large-v3-turbo`
 2. 在 PowerShell 執行 `./setup.ps1`。它會安裝依賴並下載語音模型到專案內的 `models/faster-whisper-large-v3-turbo/`。
 3. 在 Chrome 輸入 `chrome://extensions`，開啟「開發人員模式」，按「載入未封裝項目」，選取本專案的 `chrome-extension` 資料夾。
 4. 執行 `start.bat`，讓本機服務維持執行。它只監聽 `127.0.0.1:8788`。
-5. 開啟 YouTube 影片，點 Chrome 工具列的 Live Translator 圖示。側邊欄「設定」選 NVIDIA、OpenAI 或自訂服務，填 API Key，選觀看延遲，按「儲存設定」再按「測試翻譯」。預設延遲為 2 秒，也可選 0、4 或 6 秒。
+5. 開啟並播放 YouTube 影片，點 Chrome 工具列的 Live Translator 圖示。側邊欄「設定」選 NVIDIA、OpenAI 或自訂服務，填 API Key，選字幕目標語言（預設繁體中文，可選简体中文、English、한국어）及觀看延遲，按「儲存設定」再按「測試翻譯」。預設延遲為 2 秒，也可選 0、4 或 6 秒。目標語言切換會自動儲存；按開始也會保存目前設定。
 6. 在「字幕」按「開始擷取目前分頁」。日文暫定文字及定稿的日文／繁中字幕會出現在 YouTube 影片上。使用 Chrome 工具列圖示也可開啟側邊欄並啟動。停止時按「停止」；結束使用時關閉 `start.bat` 的命令視窗。
 
 API Key 與留言習慣保存在這台電腦的 Chrome 擴充功能儲存空間，重新開啟仍可使用。Chrome 本機儲存空間不是加密保管庫；使用共用電腦時請自行移除金鑰。金鑰只送到本機服務，供它向所選翻譯 API 發出請求；不會寫進專案檔案或 Git。設定變更後，正在執行的字幕需停止並重新開始才會使用新設定。
@@ -17,7 +17,11 @@ API Key 與留言習慣保存在這台電腦的 Chrome 擴充功能儲存空間�
 
 修改擴充功能程式檔案後，需在 `chrome://extensions` 按該擴充功能的「重新載入」，再重新整理 YouTube 分頁。只重新整理 YouTube 不會更新擴充功能程式。
 
+0.3.0 版設定頁會顯示擴充功能版本，並檢查本機服務協定版本。遇到「本機服務仍是舊版」時，關閉原本的服務視窗，再執行 `start.bat`。啟動擷取會先檢查並補載 YouTube 字幕腳本，確認影片緩衝圖層可顯示，才接通延遲音訊；失敗會停止擷取並顯示原因。延後画面與字幕共用播放器最上層的圖層；延遲模式可能遮住原生控制列的視覺，可使用側邊欄停止或鍵盤控制播放器。
+
 NVIDIA 預設模型為 `google/gemma-4-31b-it`。先前的 `qwen/qwen3-next-80b-a3b-instruct` 已於 2026-07-27 停用，會造成翻譯請求失敗。可在設定頁輸入 NVIDIA Build 目前提供的其他模型 ID。OpenAI 預設使用 `https://api.openai.com/v1/chat/completions` 與 `gpt-4.1-mini`。自訂端點需提供完整的 `/chat/completions` 網址；支援 HTTPS 或本機 HTTP。
+
+選用 `nvidia/riva-translate-*` 時，後端依其[官方格式](https://build.nvidia.com/nvidia/riva-translate-4b-instruct-v2/modelcard)以 system 訊息傳遞語言代碼，user 訊息只放原文。專用翻譯模型不套用個人留言風格；特定語言組合的實際品質仍須以你的 API 測試確認。
 
 本機語音模型可用音檔先測試：
 

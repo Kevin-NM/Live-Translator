@@ -11,12 +11,13 @@
     </section>
     <section id="chat" class="page">
       <h1>留言翻譯</h1><p>貼上日文留言，或寫繁中並轉為日文。送出前可自行修改。</p>
-      <label for="incoming">日文 → 繁中</label><textarea id="incoming" placeholder="貼上日文留言"></textarea><button id="translate-incoming">翻成繁中</button><div id="incoming-result" class="result" aria-live="polite"></div>
+      <label for="incoming">日文 → 設定的目標語言</label><textarea id="incoming" placeholder="貼上日文留言"></textarea><button id="translate-incoming">翻譯日文</button><div id="incoming-result" class="result" aria-live="polite"></div>
       <label for="outgoing">繁中 → 日文</label><textarea id="outgoing" placeholder="輸入想說的話"></textarea><button id="translate-outgoing">翻成日文</button><div id="outgoing-result" class="result" aria-live="polite"></div><button id="copy-outgoing" disabled>複製日文</button>
     </section>
     <section id="settings" class="page">
       <h1>翻譯設定</h1><p>設定會保存在這台電腦的 Chrome 擴充功能儲存空間。</p>
       <label for="delay-ms">觀看延遲</label><select id="delay-ms"><option value="0">不延遲</option><option value="2000">2 秒（較接近直播）</option><option value="4000">4 秒（譯文較有機會提早完成）</option><option value="6000">6 秒（較完整）</option></select><p class="hint">延後你看到的影片與聽到的聲音；變更後請重新開始擷取。受保護影片或高負載時可能無法穩定延後畫面。</p>
+      <label for="target-language">字幕與日文留言翻譯成</label><select id="target-language"><option value="zh-TW">繁體中文（台灣）</option><option value="zh-CN">简体中文</option><option value="en">English</option><option value="ko">한국어</option></select>
       <label for="provider">服務</label><select id="provider"><option value="nvidia">NVIDIA Build</option><option value="openai">OpenAI v1 Chat Completions</option><option value="custom">自訂相容 API</option><option value="none">只顯示日文</option></select>
       <label for="model">模型名稱</label><input id="model" spellcheck="false">
       <div id="endpoint-field"><label for="endpoint">API 網址（完整 /chat/completions）</label><input id="endpoint" spellcheck="false"></div>

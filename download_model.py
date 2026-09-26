@@ -1,15 +1,22 @@
-from pathlib import Path
+import argparse
 
 from faster_whisper.utils import download_model
+from app.models import DEFAULT_MODEL, MODELS, model_dir, model_ready
 
 
-target = Path(__file__).resolve().parent / "models" / "faster-whisper-large-v3-turbo"
-revision = "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf"
-target.mkdir(parents=True, exist_ok=True)
-print(f"Downloading to {target}")
-download_model("dropbox-dash/faster-whisper-large-v3-turbo", output_dir=str(target), revision=revision)
-for name in ("model.bin", "config.json", "tokenizer.json", "preprocessor_config.json", "vocabulary.json"):
-    file = target / name
-    if not file.exists() or file.stat().st_size == 0:
-        raise SystemExit(f"Missing model file: {file}")
-print(f"Ready: {target / 'model.bin'} ({(target / 'model.bin').stat().st_size / 1024**3:.2f} GiB)")
+def main():
+    parser = argparse.ArgumentParser(description="下載本機 STT 模型到專案 models 資料夾")
+    parser.add_argument("--model", choices=MODELS, default=DEFAULT_MODEL)
+    args = parser.parse_args()
+    entry = MODELS[args.model]
+    target = model_dir(args.model)
+    target.mkdir(parents=True, exist_ok=True)
+    print(f"Downloading {args.model} to {target}")
+    kwargs = {"revision": entry["revision"]} if "revision" in entry else {}
+    download_model(entry["repo"], output_dir=str(target), **kwargs)
+    if not model_ready(args.model):
+        raise SystemExit("下載未完成，請重新執行同一指令")
+    print(f"Ready: {target}")
+
+if __name__ == "__main__":
+    main()

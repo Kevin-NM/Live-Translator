@@ -1,9 +1,63 @@
 <!doctype html>
-<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Live Translator 本機服務</title>
-<style>body{margin:0;background:#f4f6f1;color:#1c271f;font:16px/1.6 system-ui,"Microsoft JhengHei",sans-serif}main{max-width:680px;margin:7vh auto;padding:38px;background:#fff;border:1px solid #dce4db;border-radius:18px}h1{margin:0 0 8px}p{color:#5a685d}li{margin:12px 0}code{background:#edf2eb;padding:3px 6px;border-radius:5px;overflow-wrap:anywhere}a{color:#256643}@media(max-width:750px){main{margin:0;border:0;border-radius:0;padding:25px}}</style></head>
-<body><main><h1>本機字幕服務已啟動</h1><p>操作介面現在是 Chrome 擴充功能。字幕會顯示在 YouTube 影片上。</p>
-<ol><li>在 Chrome 開啟 <code>chrome://extensions</code>，開啟「開發人員模式」。</li>
-<li>點「載入未封裝項目」，選取專案中的 <code>chrome-extension</code> 資料夾。</li>
-<li>開啟 YouTube 影片，點擴充功能圖示。側邊欄的「設定」可儲存 API Key，並測試 NVIDIA、OpenAI 或自訂 API。</li>
-<li>回到「字幕」按「開始擷取目前分頁」。字幕會疊在影片上。結束時按「停止」，並關閉啟動服務的命令視窗。</li></ol>
-<p>本機服務狀態：<a href="/api/status">查看模型狀態</a>。完整說明請看專案 README。</p></main></body></html>
+<html lang="zh-Hant">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Live Translator</title><link rel="stylesheet" href="/static/panel.css"></head>
+<body>
+<a class="skip" href="#main">跳到主要內容</a>
+<div class="shell">
+  <header><div class="brand"><span class="brand-mark" aria-hidden="true">LT</span><div><strong>Live Translator</strong><small>聽懂直播，加入對話。</small></div></div><span class="version">0.6.0</span></header>
+  <div class="connection"><span id="model-state" role="status">正在連線本機服務…</span><button id="refresh-service" class="quiet">重新檢查</button></div>
+  <nav aria-label="主要功能"><button class="selected" data-page="live" aria-current="page">即時字幕</button><button data-page="chat">留言助手</button><button data-page="settings">模型與設定</button></nav>
+  <main id="main">
+    <section id="live" class="page active">
+      <div class="live-layout"><div class="live-controls">
+        <p class="eyebrow">LIVE CAPTIONS</p><h1>專心看直播。<br>字幕交給我們。</h1><p id="capture-description">擷取 YouTube 分頁音訊，將譯文顯示在影片上。</p>
+        <div class="session-status"><span class="status-dot" aria-hidden="true"></span><span id="capture-status" role="status">已停止</span></div>
+        <div class="actions"><button id="start" class="primary">開始擷取目前分頁</button><button id="stop" disabled>停止</button></div>
+        <p id="latency-info" class="hint">收到譯文後會顯示處理時間與緩衝建議。</p>
+        <dl class="session-summary"><div><dt>辨識模型</dt><dd id="summary-stt">Large v3 Turbo</dd></div><div><dt>直播翻譯</dt><dd id="summary-api">尚未設定</dd></div><div><dt>輸出語言</dt><dd id="summary-language">繁體中文（台灣）</dd></div></dl>
+        <button class="text-button" data-open-settings>調整字幕與 API →</button>
+      </div><div class="transcript"><div class="section-heading"><h2>字幕紀錄</h2><button id="clear-captions" class="quiet">清除</button></div><p id="partial" class="partial" aria-live="polite"></p><div id="captions" class="captions" aria-label="字幕紀錄"><p class="muted empty">還沒有字幕<br><small>開始擷取後，原文與譯文會保留在這裡。</small></p></div></div></div>
+    </section>
+    <section id="chat" class="page">
+      <p class="eyebrow">CONVERSATION</p><h1>看懂留言，也能自然回覆。</h1><p id="chat-api-summary" class="hint">使用直播翻譯 API</p>
+      <div class="chat-grid"><div class="chat-tool"><h2>讀懂日文</h2><label for="incoming">收到的留言</label><textarea id="incoming" maxlength="4000" placeholder="貼上你想看懂的日文留言"></textarea><button id="translate-incoming" class="primary">翻譯留言</button><div id="incoming-result" class="result" aria-live="polite">譯文會顯示在這裡。</div></div>
+      <div class="chat-tool"><h2>用日文回覆</h2><label for="outgoing">想說的話（中文）</label><textarea id="outgoing" maxlength="4000" placeholder="用自己的方式寫，讓 AI 幫你轉成日文"></textarea><button id="translate-outgoing" class="primary">翻成日文</button><div id="outgoing-result" class="result" aria-live="polite">確認譯文後，再複製到聊天室。</div><button id="copy-outgoing" disabled>複製日文</button></div></div>
+      <button class="text-button" data-open-settings>設定獨立留言 API 與回覆習慣 →</button>
+    </section>
+    <section id="settings" class="page">
+      <p class="eyebrow">YOUR WORKSPACE</p><h1>模型與設定</h1><p id="storage-description">設定保存在這台電腦的 Chrome 擴充功能儲存空間。</p>
+      <div class="settings-grid">
+      <fieldset><legend>01 / 本機語音辨識</legend><p class="hint">音訊留在本機 GPU；更換後重新開始擷取。</p>
+        <label for="stt-model">Whisper 模型</label><select id="stt-model"><option value="large-v3-turbo">Large v3 Turbo</option></select><p id="model-download-info" class="hint"></p><code id="model-download-command"></code><button id="copy-model-command" class="quiet">複製下載指令</button>
+        <div class="field-grid"><div><label for="stt-quality">辨識偏好</label><select id="stt-quality"><option value="accurate">準確優先</option><option value="fast">速度優先</option></select></div><div><label for="segment-seconds">最長片段</label><select id="segment-seconds"><option value="3">3 秒 · 較早翻譯</option><option value="4" selected>4 秒 · 平衡</option><option value="6">6 秒 · 較多上下文</option></select></div></div>
+        <label for="stt-vocabulary">日文詞彙提示</label><textarea id="stt-vocabulary" maxlength="500" placeholder="日文人名、團名或遊戲名，以逗號分隔"></textarea><p class="hint">有助於專有名詞辨識，不能保證不會聽錯。</p>
+      </fieldset>
+      <fieldset><legend>02 / 直播翻譯 API</legend><p class="hint">處理語音辨識後的文字；模型名稱可以直接修改。</p>
+        <label for="target-language">字幕翻譯成</label><select id="target-language"><option value="zh-TW">繁體中文（台灣）</option><option value="zh-CN">简体中文</option><option value="en">English</option><option value="ko">한국어</option></select>
+        <label for="provider">翻譯服務</label><select id="provider"><option value="nvidia">NVIDIA Build</option><option value="openai">OpenAI v1 Chat Completions</option><option value="custom">自訂相容 API</option><option value="none">只辨識日文</option></select>
+        <label for="model">API 模型名稱</label><input id="model" list="api-models" spellcheck="false" placeholder="輸入服務提供的模型 ID">
+        <div id="endpoint-field"><label for="endpoint">API 網址（完整 /chat/completions）</label><input id="endpoint" type="url" spellcheck="false" placeholder="https://your-api.example/v1/chat/completions"></div>
+        <label for="api-key">API Key</label><input id="api-key" type="password" autocomplete="off" spellcheck="false"><button id="test-translation">測試直播翻譯</button>
+      </fieldset>
+      <fieldset><legend>03 / 留言助手 API</legend><label for="chat-api-mode">API 使用方式</label><select id="chat-api-mode"><option value="live">沿用直播 API</option><option value="independent">使用獨立 API</option></select><p class="hint">讀取留言與日文回覆都使用這組設定，不影響直播字幕。</p>
+        <div id="chat-api-fields" hidden>
+          <label for="chat-provider">翻譯服務</label><select id="chat-provider"><option value="nvidia">NVIDIA Build</option><option value="openai">OpenAI v1 Chat Completions</option><option value="custom">自訂相容 API</option></select>
+          <label for="chat-model">API 模型名稱</label><input id="chat-model" list="api-models" spellcheck="false">
+          <div id="chat-endpoint-field"><label for="chat-endpoint">API 網址（完整 /chat/completions）</label><input id="chat-endpoint" type="url" spellcheck="false"></div>
+          <label for="chat-api-key">API Key</label><input id="chat-api-key" type="password" autocomplete="off" spellcheck="false">
+          <label for="chat-target-language">日文留言翻譯成</label><select id="chat-target-language"><option value="zh-TW">繁體中文（台灣）</option><option value="zh-CN">简体中文</option><option value="en">English</option><option value="ko">한국어</option></select>
+        </div>
+        <label for="style">日文回覆習慣</label><textarea id="style" maxlength="1000" placeholder="例如：短句、少用 emoji、偶爾用 w，不要太誇張"></textarea><p class="hint">聊天模型可套用習慣；Riva 專用翻譯模型不支援風格提示。</p><button id="test-chat-translation">測試留言翻譯</button>
+      </fieldset>
+      <fieldset id="overlay-settings"><legend>04 / 影片上的字幕</legend><div class="field-grid"><div><label for="caption-size">字幕大小</label><select id="caption-size"><option value="16">小 · 16 px</option><option value="20" selected>標準 · 20 px</option><option value="24">大 · 24 px</option></select></div><div><label for="caption-mode">字幕內容</label><select id="caption-mode"><option value="translated">只顯示譯文</option><option value="bilingual">日文＋譯文</option></select></div></div><p class="hint">大小與內容可即時調整。長譯文分頁顯示，全文保留在字幕紀錄。</p>
+        <label for="delay-ms">觀看延遲</label><select id="delay-ms"><option value="0">不延遲</option><option value="2000">2 秒</option><option value="4000">4 秒</option><option value="6000">6 秒</option><option value="8000">8 秒</option><option value="10000">10 秒</option><option value="12000">12 秒</option></select><p class="hint">畫面與聲音一起延後，讓翻譯有時間完成。更換後重新開始擷取。較长延遲會降低緩衝畫質，慢 API 仍可能晚到。</p>
+      </fieldset>
+      </div>
+      <div class="save-bar"><button id="save" class="primary">儲存設定</button><span id="settings-result" role="status" aria-live="polite">API Key 僅存於此瀏覽器；不會寫入專案檔案。</span></div>
+      <p class="hint">金鑰儲存空間沒有加密；只傳送到本機服務，再由本機服務呼叫你指定的 API。Web 與擴充功能分別保存設定。</p>
+    </section>
+    <datalist id="api-models"><option value="google/gemma-4-31b-it"><option value="gpt-4.1-mini"><option value="nvidia/riva-translate-4b-instruct-v2"></datalist>
+  </main><footer>本機辨識 · 自選翻譯 API <span>Live Translator / MIT</span></footer>
+</div>
+<script src="/static/platform.js"></script><script src="/static/panel.js"></script>
+</body></html>

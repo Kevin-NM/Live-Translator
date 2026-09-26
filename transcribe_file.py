@@ -1,12 +1,14 @@
 import argparse
 
 from app.stt import get_model
+from app.models import DEFAULT_MODEL, MODELS
 
 
 parser = argparse.ArgumentParser(description="用專案內的 GPU 模型辨識日文音訊")
 parser.add_argument("audio", help="音訊檔案路徑，例如 WAV、MP3")
+parser.add_argument("--model", choices=MODELS, default=DEFAULT_MODEL)
 args = parser.parse_args()
-segments, _ = get_model().transcribe(
+segments, _ = get_model(args.model).transcribe(
     args.audio,
     language="ja",
     beam_size=1,

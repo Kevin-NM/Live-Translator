@@ -7,7 +7,7 @@ import httpx
 import numpy as np
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.main import app, audio_socket
 from app.translation import TranslationConfig, translate
 
 
@@ -28,7 +28,7 @@ class TranslationSettingsTests(unittest.TestCase):
         self.assertEqual(calls[1]['messages'][1]['content'], 'Congratulations!')
 
     def test_protocol_version(self):
-        self.assertEqual(TestClient(app).get('/api/status').json()['protocol_version'], 6)
+        self.assertEqual(TestClient(app).get('/api/status').json()['protocol_version'], 7)
 
     def test_target_language_selection_and_riva_payload(self):
         calls = []
@@ -118,9 +118,67 @@ class TranslationSettingsTests(unittest.TestCase):
 
 
 class AudioSocketTests(unittest.TestCase):
+    def test_cancel_after_load_releases_owned_model(self):
+        class Socket:
+            headers = {}
+            async def accept(self): pass
+            async def receive_text(self): return '{"translation":{"provider":"none"}}'
+            async def send_json(self, value):
+                if value['type'] == 'ready': raise asyncio.CancelledError()
+        with patch('app.main.acquire_model', return_value=object()), patch('app.main.release_model') as release:
+            with self.assertRaises(asyncio.CancelledError): asyncio.run(audio_socket(Socket()))
+            release.assert_called_once()
+
+    def test_cancel_during_native_load_collects_and_releases_late_lease(self):
+        import threading
+        class Socket:
+            headers = {}
+            async def accept(self): pass
+            async def receive_text(self): return '{"translation":{"provider":"none"}}'
+            async def send_json(self, value): pass
+        async def scenario():
+            started = asyncio.Event()
+            gate = threading.Event()
+            loop = asyncio.get_running_loop()
+            def load(_):
+                loop.call_soon_threadsafe(started.set)
+                gate.wait(timeout=3)
+                return object()
+            with patch('app.main.acquire_model', side_effect=load), patch('app.main.release_model') as release:
+                task = asyncio.create_task(audio_socket(Socket()))
+                await started.wait()
+                task.cancel(); gate.set()
+                with self.assertRaises(asyncio.CancelledError): await task
+                release.assert_called_once()
+        asyncio.run(scenario())
+
+    def test_model_selection_is_passed_and_lease_released_on_disconnect(self):
+        with patch('app.main.acquire_model', return_value=object()) as acquire, patch('app.main.release_model') as release:
+            with TestClient(app).websocket_connect('/ws/audio') as ws:
+                ws.send_json({'translation': {'provider': 'none'}, 'recognition': {'model': 'small'}})
+                ws.receive_json(); ws.receive_json()
+            acquire.assert_called_once_with('small')
+            release.assert_called_once()
+
+    def test_failed_model_load_emits_error_without_releasing_unowned_lease(self):
+        with patch('app.main.acquire_model', side_effect=RuntimeError('模型尚未下載')), patch('app.main.release_model') as release:
+            with TestClient(app).websocket_connect('/ws/audio') as ws:
+                ws.send_json({'translation': {'provider': 'none'}})
+                ws.receive_json()
+                self.assertEqual(ws.receive_json()['type'], 'error')
+            release.assert_not_called()
+
+    def test_web_ui_and_model_registry_are_served(self):
+        client = TestClient(app)
+        self.assertIn('留言助手 API', client.get('/').text)
+        self.assertEqual(client.get('/static/platform.js').status_code, 200)
+        models = client.get('/api/status').json()['models']
+        self.assertEqual({entry['id'] for entry in models}, {'small', 'medium', 'large-v3', 'large-v3-turbo'})
+        self.assertTrue(all('download_command' in entry for entry in models))
+
     def test_translated_only_skips_previews_and_finalises_at_four_seconds(self):
         packet = np.full(3200, 9000, dtype='<i2').tobytes()
-        with patch('app.main.get_model', return_value=object()), patch('app.main.transcribe_pcm', return_value='テスト') as decode, patch('app.main.translate', return_value='測試'):
+        with patch('app.main.acquire_model', return_value=object()), patch('app.main.transcribe_pcm', return_value='テスト') as decode, patch('app.main.translate', return_value='測試'):
             with TestClient(app).websocket_connect('/ws/audio') as ws:
                 ws.send_json({'translation': {'provider': 'custom', 'endpoint': 'http://localhost:1234/v1/chat/completions', 'model': 'test'}, 'recognition': {'previews': False, 'segment_seconds': 4}})
                 ws.receive_json(); ws.receive_json()
@@ -138,7 +196,7 @@ class AudioSocketTests(unittest.TestCase):
     def test_caption_timestamps_include_silence_before_voice(self):
         silence = (np.zeros(3200, dtype="<i2")).tobytes()
         voice = (np.full(3200, 9000, dtype="<i2")).tobytes()
-        with patch("app.main.get_model", return_value=object()), patch("app.main.transcribe_pcm", return_value="こんにちは"):
+        with patch("app.main.acquire_model", return_value=object()), patch("app.main.transcribe_pcm", return_value="こんにちは"):
             with TestClient(app).websocket_connect("/ws/audio") as ws:
                 ws.send_json({"translation": {"provider": "none"}})
                 ws.receive_json(); ws.receive_json()
@@ -151,7 +209,7 @@ class AudioSocketTests(unittest.TestCase):
                 self.assertEqual((final["start_ms"], final["end_ms"]), (400, 1600))
 
     def test_extension_origin_can_connect(self):
-        with patch("app.main.get_model", return_value=object()):
+        with patch("app.main.acquire_model", return_value=object()):
             with TestClient(app).websocket_connect("/ws/audio", headers={"origin": "chrome-extension://test-extension"}) as ws:
                 ws.send_json({"translation": {"provider": "none"}})
                 self.assertEqual(ws.receive_json()["type"], "status")
@@ -160,7 +218,7 @@ class AudioSocketTests(unittest.TestCase):
 
     def test_pcm_stream_emits_partial_and_final(self):
         packet = (np.full(3200, 9000, dtype="<i2")).tobytes()
-        with patch("app.main.get_model", return_value=object()), patch("app.main.transcribe_pcm", return_value="こんにちは"):
+        with patch("app.main.acquire_model", return_value=object()), patch("app.main.transcribe_pcm", return_value="こんにちは"):
             with TestClient(app).websocket_connect("/ws/audio") as ws:
                 ws.send_json({"translation": {"provider": "none"}})
                 self.assertEqual(ws.receive_json()["type"], "status")
@@ -178,7 +236,7 @@ class AudioSocketTests(unittest.TestCase):
     def test_preroll_preserves_quiet_onset_and_recognition_settings(self):
         quiet = np.full(3200, 100, dtype='<i2').tobytes()
         voice = np.full(3200, 9000, dtype='<i2').tobytes()
-        with patch('app.main.get_model', return_value=object()), patch('app.main.transcribe_pcm', return_value='テスト') as decode:
+        with patch('app.main.acquire_model', return_value=object()), patch('app.main.transcribe_pcm', return_value='テスト') as decode:
             with TestClient(app).websocket_connect('/ws/audio') as ws:
                 ws.send_json({'translation': {'provider': 'none'}, 'recognition': {'quality': 'accurate', 'vocabulary': 'DIALOGUE＋'}})
                 ws.receive_json(); ws.receive_json()
@@ -190,7 +248,7 @@ class AudioSocketTests(unittest.TestCase):
                 pcm = decode.call_args.args[0]
                 self.assertEqual(pcm.size, 25600)
                 np.testing.assert_allclose(pcm[:6400], 100 / 32768)
-                self.assertEqual(decode.call_args.kwargs, {'final': True, 'quality': 'accurate', 'vocabulary': 'DIALOGUE＋'})
+                self.assertEqual(decode.call_args.kwargs, {'final': True, 'quality': 'accurate', 'vocabulary': 'DIALOGUE＋', 'model': unittest.mock.ANY})
 
 
 if __name__ == "__main__":

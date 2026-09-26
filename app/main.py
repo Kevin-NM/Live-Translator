@@ -12,12 +12,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app.stt import MODEL_DIR, get_model, transcribe_pcm
+from app.stt import acquire_model, release_model, transcribe_pcm
+from app.models import DEFAULT_MODEL, list_models, model_ready
 from app.translation import PRESETS, TranslationConfig, translate
 
 
 ROOT = Path(__file__).resolve().parent.parent
-PROTOCOL_VERSION = 6
+PROTOCOL_VERSION = 7
 app = FastAPI(title="Live Translator")
 app.mount("/static", StaticFiles(directory=ROOT / "web"), name="static")
 
@@ -36,8 +37,7 @@ async def index():
 
 @app.get("/api/status")
 async def status():
-    model = MODEL_DIR / "model.bin"
-    return {"model_ready": model.exists() and model.stat().st_size > 0, "protocol_version": PROTOCOL_VERSION, "presets": {key: {"endpoint": value[0], "model": value[1]} for key, value in PRESETS.items()}}
+    return {"version": "0.6.0", "model_ready": model_ready(DEFAULT_MODEL), "models": list_models(), "protocol_version": PROTOCOL_VERSION, "presets": {key: {"endpoint": value[0], "model": value[1]} for key, value in PRESETS.items()}}
 
 
 @app.post("/api/translate")
@@ -62,6 +62,8 @@ async def audio_socket(ws: WebSocket):
     await ws.accept()
     send_lock = asyncio.Lock()
     translation_tasks: set[asyncio.Task] = set()
+    leased = False
+    model = None
 
     async def send(payload: dict):
         async with send_lock:
@@ -81,11 +83,35 @@ async def audio_socket(ws: WebSocket):
             raise ValueError("辨識片段必須為 3、4 或 6 秒")
         previews = bool(recognition.get("previews", True))
         await send({"type": "status", "message": "載入本機 GPU 語音模型…"})
-        await asyncio.to_thread(get_model)
+        loading = asyncio.create_task(asyncio.to_thread(acquire_model, recognition.get("model", DEFAULT_MODEL)))
+        try:
+            model = await asyncio.shield(loading)
+        except asyncio.CancelledError:
+            # Cancelling to_thread does not stop its native loader; collect and release its lease.
+            try:
+                await loading
+            except Exception:
+                pass
+            else:
+                await asyncio.to_thread(release_model)
+            raise
+        leased = True
+        del loading
         await send({"type": "ready"})
     except WebSocketDisconnect:
+        if leased:
+            model = None
+            await asyncio.to_thread(release_model)
         return
+    except asyncio.CancelledError:
+        if leased:
+            model = None
+            await asyncio.to_thread(release_model)
+        raise
     except Exception as exc:
+        if leased:
+            model = None
+            await asyncio.to_thread(release_model)
         await send({"type": "error", "message": str(exc)})
         await ws.close()
         return
@@ -108,7 +134,7 @@ async def audio_socket(ws: WebSocket):
             current = sequence
             combined = np.concatenate(audio)
             decode_started = time.perf_counter()
-            result = await asyncio.to_thread(transcribe_pcm, combined, final=True, quality=quality, vocabulary=vocabulary)
+            result = await asyncio.to_thread(transcribe_pcm, combined, final=True, quality=quality, vocabulary=vocabulary, model=model)
             stt_ms = round((time.perf_counter() - decode_started) * 1000)
             if result:
                 start_ms = round(utterance_start_sample / 16)
@@ -173,7 +199,7 @@ async def audio_socket(ws: WebSocket):
             samples += chunk.size
             silence = 0 if voice else silence + chunk.size
             if previews and samples >= 25600 and samples - last_decode_samples >= 25600 and silence < 9600 and samples < segment_seconds * 16000:
-                result = await asyncio.to_thread(transcribe_pcm, np.concatenate(audio), quality=quality, vocabulary=vocabulary)
+                result = await asyncio.to_thread(transcribe_pcm, np.concatenate(audio), quality=quality, vocabulary=vocabulary, model=model)
                 if result:
                     await send({"type": "partial", "text": result, "start_ms": round(utterance_start_sample / 16), "end_ms": round(total_samples / 16)})
                 last_decode_samples = samples
@@ -187,6 +213,9 @@ async def audio_socket(ws: WebSocket):
         except Exception:
             pass
     finally:
+        if leased:
+            model = None
+            await asyncio.to_thread(release_model)
         for task in translation_tasks:
             task.cancel()
         try:

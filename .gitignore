@@ -4,3 +4,8 @@ models/
 __pycache__/
 *.py[cod]
 .env
+.env.*
+!.env.example
+*.log
+dist/
+.DS_Store

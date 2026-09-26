@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Live Translator 日文直播字幕",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "minimum_chrome_version": "116",
   "description": "擷取 YouTube 分頁音訊，將日文與繁體中文顯示在影片上。",
   "permissions": ["tabCapture", "offscreen", "storage", "sidePanel", "tabs", "scripting"],

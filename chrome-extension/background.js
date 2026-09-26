@@ -60,7 +60,7 @@ async function start(tabId) {
   const response = await fetch('http://127.0.0.1:8788/api/status').catch(() => null);
   if (!response?.ok) throw new Error('本機字幕服務未啟動。請執行 start.bat。');
   const status = await response.json();
-  if (status.protocol_version !== 6) throw new Error('本機字幕服務仍是舊版。請關閉舊服務，再重新執行 start.bat。');
+  if (status.protocol_version !== 7) throw new Error('本機字幕服務仍是舊版。請關閉舊服務，再重新執行 start.bat。');
   await ensureOverlay(tabId, delayMs);
   // Must be called from a user-invoked extension action or side-panel click.
   let streamId;

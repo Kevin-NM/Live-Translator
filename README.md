@@ -1,8 +1,12 @@
 # Live Translator
 
+[![Tests](https://github.com/Kevin-NM/Live-Translator/actions/workflows/test.yml/badge.svg)](https://github.com/Kevin-NM/Live-Translator/actions/workflows/test.yml)
+
 **本機辨識日文直播，自選 API 翻譯字幕與留言。**
 
 Live Translator 提供獨立 Web GUI 與 Chrome 側邊欄。本機 faster-whisper 處理音訊，翻譯服務只收到辨識文字；直播與留言可以使用不同的 API、模型和金鑰。
+
+**[下載完整專案 0.6.0](https://github.com/Kevin-NM/Live-Translator/releases/download/v0.6.0/Live-Translator-v0.6.0.zip)** · [下載 Chrome 擴充功能](https://github.com/Kevin-NM/Live-Translator/releases/download/v0.6.0/Live-Translator-Chrome-v0.6.0.zip) · [發行說明](https://github.com/Kevin-NM/Live-Translator/releases/tag/v0.6.0)
 
 ## 功能
 

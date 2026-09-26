@@ -19,13 +19,15 @@ from app.models import DEFAULT_MODEL, list_models, model_ready
 from app.translation import PRESETS, TranslationConfig, translate
 from app.languages import LANGUAGES, whisper_language
 from app.transcripts import TranscriptStore, export_transcript
+from app.captions import create_caption_router
 
 
 ROOT = Path(__file__).resolve().parent.parent
-PROTOCOL_VERSION = 8
+PROTOCOL_VERSION = 9
 transcripts = TranscriptStore()
 app = FastAPI(title="Live Translator")
 app.mount("/static", StaticFiles(directory=ROOT / "web"), name="static")
+app.include_router(create_caption_router(lambda:transcripts))
 
 @app.on_event('startup')
 async def recover_transcripts():
@@ -72,7 +74,7 @@ async def index():
 
 @app.get("/api/status")
 async def status():
-    return {"version": "0.7.0", "languages": LANGUAGES, "model_ready": model_ready(DEFAULT_MODEL), "models": list_models(), "protocol_version": PROTOCOL_VERSION, "presets": {key: {"endpoint": value[0], "model": value[1]} for key, value in PRESETS.items()}}
+    return {"version": "0.8.0", "languages": LANGUAGES, "model_ready": model_ready(DEFAULT_MODEL), "models": list_models(), "protocol_version": PROTOCOL_VERSION, "presets": {key: {"endpoint": value[0], "model": value[1]} for key, value in PRESETS.items()}}
 
 
 @app.post("/api/translate")

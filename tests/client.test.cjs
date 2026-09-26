@@ -22,19 +22,28 @@ function panel(saved = {}) {
   for (const match of read('chrome-extension/panel.html').matchAll(/id="([^"]+)"/g)) elements.set(match[1], new Element());
   const document = {getElementById: id => elements.get(id), querySelectorAll: () => [], createElement: () => new Element()};
   const requests = [];
+  const youtubeRequests = [], runtimeCalls=[];
+  let record;
   const storage = {...saved};
   const context = vm.createContext({document, console, Map, AbortSignal, navigator: {clipboard: {writeText: async () => {}}}, platform: {
     kind: 'extension', baseUrl: 'http://127.0.0.1:8788',
     storage: {local: {get: async () => storage, set: async values => Object.assign(storage, values)}},
     tabs: {query: async () => [{id: 1}]},
-    runtime: {onMessage: {addListener() {}}, sendMessage: async () => ({ok: true})},
+    runtime: {onMessage: {addListener() {}}, sendMessage: async message => {runtimeCalls.push(message); return {ok:true};}},
   }, fetch: async (url, options) => {
-    if (url.endsWith('/api/status')) return {ok: true, json: async () => ({version:'0.7.0', protocol_version:8, models:[{id:'large-v3-turbo',label:'Turbo',ready:true}]})};
+    if (url.endsWith('/api/status')) return {ok: true, json: async () => ({version:'0.8.0', protocol_version:9, models:[{id:'large-v3-turbo',label:'Turbo',ready:true}]})};
     if (url.endsWith('/api/transcripts')) return {ok:true,json:async () => []};
+    if (url.includes('/api/youtube/')) {
+      const body=JSON.parse(options.body); youtubeRequests.push({url,body});
+      const data=url.endsWith('/tracks')?{video_id:'jNQXAC9IVRw',tracks:[{key:'manual:en',label:'English · 人工字幕'}]}:url.endsWith('/captions')?{video_id:'jNQXAC9IVRw',source_language:'en',track_key:'manual:en',cues:[{start_ms:1234,end_ms:3456,text:'Hello'}]}:(record={id:'record',source_language:'en',target_language:body.target_language,offset_ms:0,rate:1,alignment:'manual',count:1,pending:0,caption_source:{video_id:body.video_id,track_key:body.track_key},cues:[{id:1,start_ms:1234,end_ms:3456,source:'Hello',status:'source'}]});
+      return {ok:true,json:async()=>data};
+    }
+    if (url.endsWith('/api/transcripts/record')) return {ok:true,json:async()=>record};
     requests.push(JSON.parse(options.body)); return {ok:true, json: async () => ({text:'測試譯文'})};
   }});
+  vm.runInContext(read('chrome-extension/caption-ui.js'), context);
   vm.runInContext(read('chrome-extension/panel.js'), context);
-  return {elements, requests, storage, context};
+  return {elements, requests, youtubeRequests, runtimeCalls, storage, context};
 }
 
 test('old live settings migrate unchanged; default chat reuses live API', async () => {
@@ -106,8 +115,9 @@ function web(hasAudio = true) {
     connect(node) {assert.equal(node.gain.value,0); connections++; return node;}
     disconnect() {}
   }
-  const sandbox = {window:{addEventListener() {}}, navigator:{mediaDevices:{getDisplayMedia:async () => stream}},location:{origin:'http://127.0.0.1:8788'},localStorage:{getItem:() => settings,setItem:(_,value) => settings=value},AudioContext:Context,AudioWorkletNode:Processor,WebSocket:Socket,setTimeout,clearTimeout};
+  const sandbox = {window:{addEventListener() {}}, navigator:{mediaDevices:{getDisplayMedia:async () => stream}},location:{origin:'http://127.0.0.1:8788'},localStorage:{getItem:() => settings,setItem:(_,value) => settings=value},AudioContext:Context,AudioWorkletNode:Processor,WebSocket:Socket,setTimeout,clearTimeout,setInterval,clearInterval};
   sandbox.window = sandbox; sandbox.addEventListener = () => {};
+  vm.runInNewContext(read('chrome-extension/caption-transport.js'),sandbox);
   vm.runInNewContext(read('web/platform.js'),sandbox);
   const events = []; sandbox.platform.runtime.onMessage.addListener(event => events.push(event));
   return {platform:sandbox.platform,events,stream,get socket(){return socket;},get processor(){return processor;},get stopped(){return stopped;},get connections(){return connections;}};
@@ -133,4 +143,38 @@ test('Web PCM begins only after ready, keeps audio muted, and flushes EOS on sto
   assert.equal(JSON.parse(w.socket.sent[2]).type,'eos'); assert.equal(w.stopped,1);
   w.socket.onclose(); await tick();
   assert.equal(w.events.at(-1).state,'stopped');
+});
+
+test('existing captions are an explicit source and loading never calls translation or audio',async()=>{
+  const p=panel({subtitleSource:'captions'});await tick();
+  assert.equal(p.elements.get('existing-caption-tools').hidden,false);
+  assert.equal(p.elements.get('start').disabled,true);
+  p.elements.get('caption-url').value='https://www.youtube.com/watch?v=jNQXAC9IVRw';
+  await p.elements.get('load-caption-tracks').handlers.click();
+  assert.equal(p.elements.get('caption-track').value,'manual:en');
+  await p.elements.get('load-selected-caption').handlers.click();
+  assert.equal(p.requests.length,0);
+  assert.equal(p.elements.get('start').disabled,false);
+  assert.match(p.elements.get('caption-source-info').textContent,/1 句/);
+  await p.elements.get('start').handlers.click();
+  assert.ok(p.runtimeCalls.some(call=>call.type==='caption_start'&&call.transcript_id==='record'));
+  assert.ok(!p.runtimeCalls.some(call=>call.type==='start'));
+  assert.equal(p.storage.subtitleSource,'captions');
+});
+test('subtitle-only Web start does not request sharing or create audio nodes',async()=>{
+  const w=web();
+  await w.platform.runtime.sendMessage({type:'caption_start',transcript_id:'record'});
+  assert.equal(w.connections,0);
+  w.socket.onopen();
+  assert.equal(JSON.parse(w.socket.sent[0]).transcript_id,'record');
+  w.socket.onmessage({data:JSON.stringify({type:'caption_complete',completed:1,total:1})});
+  w.socket.onclose();
+  assert.equal(w.events.at(-1).state,'watching');
+  await w.platform.runtime.sendMessage({type:'stop'});
+  assert.equal(w.events.at(-1).state,'stopped');
+  assert.equal(w.stopped,0);
+  await w.platform.runtime.sendMessage({type:'caption_start',transcript_id:'record'});
+  w.socket.onmessage({data:JSON.stringify({type:'error',message:'Bad API setting'})});
+  w.socket.onclose();await tick();
+  assert.equal(w.events.at(-1).error,'Bad API setting');
 });

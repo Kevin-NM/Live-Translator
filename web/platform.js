@@ -16,6 +16,10 @@
   async function release(session, finish = false) {
     if (!session || session.closed || (finish && session.stopping)) return;
     session.stopping = true; session.ready = false;
+    if (session.captionConnection) {
+      session.closed=true; session.captionConnection.close();
+      if (active===session) {active=null; emit({type:'state',state:'stopped',error:session.error});} return;
+    }
     session.stream?.getTracks().forEach(track => track.stop());
     session.processor?.disconnect(); session.source?.disconnect();
     await session.context?.close().catch(() => {});
@@ -84,12 +88,29 @@
     runtime: {
       onMessage: {addListener: listener => listeners.push(listener)},
       async sendMessage(message) {
-        if (message.type === 'getState') return {session: active ? {state: active.stopping ? 'stopping' : active.state} : null};
+        if (message.type === 'getState') return {session: active ? {state: active.stopping ? 'stopping' : active.state,source:active.captionConnection?'captions':'audio',transcriptId:active.transcriptId} : null};
+        if (message.type === 'caption_start') {
+          if (active) await release(active);
+          const settings=await storage.get(['translation']);
+          const current=active={state:'starting',transcriptId:message.transcript_id};
+          current.captionConnection=connectCaptions(location.origin.replace(/^http/,'ws')+'/ws/captions',{transcript_id:message.transcript_id,translation:settings.translation || {provider:'none'}},event => {
+            if (active!==current || current.closed) return;
+            if (event.type==='ready') current.state='running';
+            if (event.type==='error') current.error=event.message;
+            if (event.type==='caption_complete') current.state='watching';
+            if (event.type==='caption_closed') {
+              if (event.completed) emit({type:'state',state:'watching',source:'captions'});
+              else release(current); return;
+            }
+            emit(event);
+          });
+          return {ok:true};
+        }
         if (message.type === 'start') return start();
         if (message.type === 'stop') {await release(active, true); return {ok: true};}
         return {ok: true};
       },
     },
   };
-  window.addEventListener('pagehide', () => {active?.stream?.getTracks().forEach(track => track.stop()); active?.socket?.close();});
+  window.addEventListener('pagehide', () => {active?.captionConnection?.close(); active?.stream?.getTracks().forEach(track => track.stop()); active?.socket?.close();});
 })();

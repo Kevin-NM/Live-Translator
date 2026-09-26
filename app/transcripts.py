@@ -28,6 +28,8 @@ class TranscriptStore:
             CREATE TABLE IF NOT EXISTS anchors (
                 session_id TEXT, sample_ms INTEGER, media_ms INTEGER, rate REAL,
                 PRIMARY KEY(session_id,sample_ms));
+            CREATE TABLE IF NOT EXISTS caption_sources (
+                session_id TEXT PRIMARY KEY, video_id TEXT, track_key TEXT);
         ''')
         return db
 
@@ -78,8 +80,21 @@ class TranscriptStore:
             result['anchors'] = [dict(row) for row in db.execute('SELECT sample_ms,media_ms,rate FROM anchors WHERE session_id=? ORDER BY sample_ms', (identity,))]
             result['count'] = len(result['cues'])
             result['pending'] = sum(row['status'] == 'pending' for row in result['cues'])
+            caption_source = db.execute('SELECT video_id,track_key FROM caption_sources WHERE session_id=?',(identity,)).fetchone()
+            result['caption_source'] = dict(caption_source) if caption_source else None
             return result
         finally: db.close()
+
+    def import_captions(self, source, target, video_id, track_key, cues):
+        identity = str(uuid.uuid4())
+        db = self.connection()
+        try:
+            with db:
+                db.execute('INSERT INTO sessions(id,created,source_language,target_language,completed) VALUES(?,?,?,?,1)',(identity,datetime.now(timezone.utc).isoformat(),source,target))
+                db.execute('INSERT INTO caption_sources VALUES(?,?,?)',(identity,video_id,track_key))
+                db.executemany('INSERT INTO cues(session_id,id,start_ms,end_ms,source,status) VALUES(?,?,?,?,?,?)',[(identity,index,cue['start_ms'],cue['end_ms'],cue['text'],'source') for index,cue in enumerate(cues,1)])
+        finally: db.close()
+        return self.get(identity)
 
     def anchor(self, identity, sample_ms, media_ms, rate):
         sample_ms, media_ms, rate = int(sample_ms), int(media_ms), float(rate)

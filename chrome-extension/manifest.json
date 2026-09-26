@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Live Translator 直播字幕",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "minimum_chrome_version": "116",
   "description": "擷取 YouTube 分頁音訊，辨識多語音訊並將譯文顯示在影片上。",
   "permissions": ["tabCapture", "offscreen", "storage", "sidePanel", "tabs", "scripting"],

@@ -6,7 +6,7 @@
 
 Live Translator 提供獨立 Web GUI 與 Chrome 側邊欄。本機 faster-whisper 處理音訊，翻譯服務只收到辨識文字；直播與留言可以使用不同的 API、模型和金鑰。
 
-**[下載完整專案 0.7.0](https://github.com/Kevin-NM/Live-Translator/releases/download/v0.7.0/Live-Translator-v0.7.0.zip)** · [下載 Chrome 擴充功能](https://github.com/Kevin-NM/Live-Translator/releases/download/v0.7.0/Live-Translator-Chrome-v0.7.0.zip) · [發行說明](https://github.com/Kevin-NM/Live-Translator/releases/tag/v0.7.0)
+**[下載完整專案 0.8.0](https://github.com/Kevin-NM/Live-Translator/releases/download/v0.8.0/Live-Translator-v0.8.0.zip)** · [下載 Chrome 擴充功能](https://github.com/Kevin-NM/Live-Translator/releases/download/v0.8.0/Live-Translator-Chrome-v0.8.0.zip) · [發行說明](https://github.com/Kevin-NM/Live-Translator/releases/tag/v0.8.0)
 
 ## 功能
 
@@ -15,6 +15,7 @@ Live Translator 提供獨立 Web GUI 與 Chrome 側邊欄。本機 faster-whispe
 - **獨立 Web GUI**：選擇分頁並分享音訊，直接在網頁查看原文與譯文；擷取預覽可套用字幕大小／雙語設定，也可單獨使用留言助手。
 - **留言助手**：留言翻譯、自選回覆語言、回覆風格提示與一鍵複製。可沿用直播 API 或使用獨立設定。
 - **模型選擇**：本機 Large v3 Turbo、Large v3、Medium、Small；API 模型 ID 可直接編輯。
+- **現有字幕翻譯**：明確選擇影片字幕來源、人工／自動字幕軌道，預先翻譯並依影片時間顯示；不需 Whisper 或音訊擷取。
 - **整場轉錄**：本機保存原文與完成譯文，匯出 SRT、ASS、TXT，支援影片時間對齊。
 - **API 服務**：NVIDIA Build、OpenAI `/v1/chat/completions`、自訂相容端點。
 
@@ -59,6 +60,28 @@ Web GUI 不改動來源播放器的畫面或聲音，也不把字幕注入其他
 5. 按「開始擷取目前分頁」；字幕會出現在影片上。停止時按「停止」。
 
 Web 與擴充功能各自保存設定，首次使用需分別填寫。擴充功能固定連接 `127.0.0.1:8788`；其他埠只適用 Web GUI，例如 `python run.py --port 8790`。
+
+## 一般影片：翻譯現有字幕
+
+影片已經有字幕、卻没有你想看的語言時，可跳過語音辨識：
+
+1. 在「即時字幕 → **字幕來源**」選 **影片現有字幕（不擷取聲音）**。
+2. 擴充功能可留空網址讀取目前 YouTube 分頁；Web 請填入 YouTube 影片網址。
+3. 按「**讀取字幕列表**」，選人工或自動字幕軌道，再按「**載入選定字幕**」。
+4. 確認句數與輸出語言；到「模型與設定 → 直播翻譯 API」選目標語言、服務與模型。
+5. 按「**開始／繼續翻譯影片字幕**」。擴充功能在原影片上顯示譯文；Web 可預先翻譯並下載字幕，無法注入另一個分頁。
+
+載入字幕不會呼叫翻譯 API；按開始後才逐句翻譯，可能產生 API 費用。翻譯使用直播 API，留言的獨立 API 不受影響。先處理目前播放點之後的字幕，再補先前部分；可以先暫停影片，等想看的部分翻譯好再播放。停止後可繼續，略過已完成譯文；連續3句失敗會停止，避免對無效設定持續發請求。目標語言改變時須重新載入字幕。
+
+此模式**不擷取音訊、不載入 GPU、不延遲影片**。字幕顯示直接跟隨播放器 currentTime，暫停、跳轉與倍速照原播放器操作。完整字幕／譯文保存在本機，SRT／ASS／TXT 匯出保留原有影片時間，Web 也不必手動填起點。完成翻譯後擴充功能維持字幕顯示，按「停止」關閉圖層。切換影片時重新讀取字幕。
+
+可讀取的是 YouTube 人工或自動**字幕軌道**；直接燒在畫面內的文字需 OCR，這一版不支援。無字幕、需登入、受限影片或 YouTube 阻擋讀取時會明確報錯，不會偷偷切回 STT。擴充功能先從目前播放器讀取，失敗時嘗試本機字幕讀取；Web 使用 [youtube-transcript-api](https://github.com/jdepoix/youtube-transcript-api)（非 YouTube 官方 API）。YouTube 介面可能改變，讀取非所有影片都保證成功。
+
+更新既有環境時先安裝新增依賴，再重啟服務與 reload 擴充功能：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
 
 ## 更換模型
 
@@ -141,7 +164,7 @@ SRT 毫秒、ASS 百分之一秒；TXT 也保留每句起訖時間。時間是�
 
 ## 更新與排錯
 
-更新程式後，**重啟本機服務、重新載入擴充功能、重新整理 YouTube**。0.7.0 使用 protocol8，舊服務會被阻止連線。
+更新程式後，**重啟本機服務、重新載入擴充功能、重新整理 YouTube**。0.8.0 使用 protocol9，舊服務會被阻止連線。
 
 | 問題 | 處理 |
 | --- | --- |

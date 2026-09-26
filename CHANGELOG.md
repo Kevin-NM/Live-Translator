@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.0
+
+- 明確的字幕來源：即時語音辨識／影片現有字幕，人工與自動軌道可選。
+- 擴充功能讀目前播放器字幕、本機讀取作 fallback；Web 可填 YouTube URL。
+- 原始字幕整場載入，預先逐句翻譯、進度、停止／繼續與成功句子去重。
+- 現有字幕不使用音訊擷取、Whisper 或觀看延遲，影片圖層依 currentTime 同步。
+- 延用直播 API 目標語言，匯出保留原始字幕時間；連續三次失敗中止工作。
+- 新依賴 youtube-transcript-api 1.2.4；更新後先安裝 requirements，再 restart／reload。
+- Backend protocol 9。
+
 ## 0.7.0
 
 - 多語來源、字幕與回覆語言選擇；保留日文預設，新增自動語音偵測。

@@ -47,7 +47,7 @@ async function refreshTranscripts() {
   $('video-offset').value = displayTime(session.offset_ms);
   $('video-rate').value = String(session.rate);
   const missing = session.cues.filter(cue => cue.status !== 'translated').length;
-  $('transcript-info').textContent = `本機保存 ${session.count} 句 · ${session.alignment === 'video' ? '已依 YouTube 影片時間校準' : '手動影片起點'}${missing ? ` · ${missing} 句沒有完成譯文（雙語匯出保留原文）` : ''}${session.pending ? ' · 翻譯中' : ''}`;
+  $('transcript-info').textContent = `本機保存 ${session.count} 句 · ${session.caption_source ? '影片原有字幕時間' : session.alignment === 'video' ? '已依 YouTube 影片時間校準' : '手動影片起點'}${missing ? ` · ${missing} 句沒有完成譯文（雙語匯出保留原文）` : ''}${session.pending ? ' · 翻譯中' : ''}`;
   $('export-transcript').disabled = running || session.pending > 0 || session.count === 0;
 }
 function renderPreview() {
@@ -88,7 +88,7 @@ function summaries() {
   $('chat-api-fields').hidden = $('chat-api-mode').value !== 'independent';
   const chat = chatConfig();
   $('chat-api-summary').textContent = `${$('chat-api-mode').value === 'independent' ? '獨立留言 API' : '沿用直播 API'} · ${chat.model || '只辨識原文'}`;
-  $('summary-stt').textContent = $('stt-model').value || desiredModel;
+  $('summary-stt').textContent = $('subtitle-source').value==='captions'?'使用影片字幕 · 不需 GPU':$('stt-model').value || desiredModel;
   $('summary-api').textContent = $('provider').value === 'none' ? '只辨識原文' : $('model').value || '尚未設定';
   $('summary-language').textContent = $('target-language').selectedOptions[0]?.textContent || '繁體中文';
 }
@@ -98,7 +98,7 @@ function settingResult(message, error = false) {
 }
 async function save() {
   const captions = {size: Number($('caption-size').value), mode: $('caption-mode').value};
-  await platform.storage.local.set({translation: config(), chatApiMode: $('chat-api-mode').value, chatTranslation: config('chat-'), captions, recognition: {model: $('stt-model').value || desiredModel, language: $('source-language').value, quality: $('stt-quality').value, vocabulary: $('stt-vocabulary').value.trim(), segment_seconds: Number($('segment-seconds').value)}, style: $('style').value, delayMs: Number($('delay-ms').value)});
+  await platform.storage.local.set({subtitleSource:$('subtitle-source').value || 'audio', translation: config(), chatApiMode: $('chat-api-mode').value, chatTranslation: config('chat-'), captions, recognition: {model: $('stt-model').value || desiredModel, language: $('source-language').value, quality: $('stt-quality').value, vocabulary: $('stt-vocabulary').value.trim(), segment_seconds: Number($('segment-seconds').value)}, style: $('style').value, delayMs: Number($('delay-ms').value)});
   await platform.runtime.sendMessage({target: 'worker', type: 'caption_settings', captions}).catch(() => {});
   summaries();
   renderPreview();
@@ -114,15 +114,29 @@ function modelInfo() {
 function showEvent(event) {
   if (event.type === 'state') {
     running = ['starting', 'running', 'stopping'].includes(event.state);
-    $('capture-status').textContent = event.error ? `錯誤：${event.error}` : ({starting: '正在啟動…', running: '正在聆聽分頁音訊', stopping: '正在完成最後一段…', stopped: '已停止'}[event.state] || event.state);
+    $('capture-status').textContent = event.error ? `錯誤：${event.error}` : ({watching:'字幕已完成，依影片時間顯示', starting: '正在啟動…', running: $('subtitle-source').value==='captions'?'正在預先翻譯影片字幕':'正在聆聽分頁音訊', stopping: '正在完成最後一段…', stopped: '已停止'}[event.state] || event.state);
     $('capture-status').classList.toggle('error', Boolean(event.error));
     $('start').disabled = running;
-    $('stop').disabled = !running || event.state === 'stopping';
+    $('stop').disabled = (!running && event.state!=='watching') || event.state === 'stopping';
+    const busy=running || event.state==='watching';
+    for (const id of ['subtitle-source','caption-url','caption-track','load-caption-tracks','load-selected-caption']) $(id).disabled=busy;
+    if (!busy) $('load-selected-caption').disabled=!captionTrackContext;
+    $('start').disabled=running || ($('subtitle-source').value==='captions' && !loadedCaption);
     $('stt-model').disabled = running;
     $('source-language').disabled = running;
     if (running) $('export-transcript').disabled = true;
     else refreshTranscripts().catch(() => {});
     if (!running && platform.kind === 'web') {$('preview-video').pause?.(); $('preview-video').srcObject=null; $('web-preview').hidden=true;}
+  } else if (event.type === 'captions_loaded') {
+    existingCueMap.clear(); for (const cue of event.cues || []) existingCueMap.set(cue.id,cue);
+    $('captions').replaceChildren(); captionRows.clear();
+    for (const cue of (event.cues || []).slice(0,50)) {showEvent({type:'final',id:cue.id,text:cue.source}); if(cue.status==='translated') showEvent({type:'translation',id:cue.id,text:cue.translation});}
+    if (event.transcript_id) transcriptId=event.transcript_id;
+  } else if (event.type === 'caption_progress') {
+    $('capture-status').textContent=`正在預先翻譯 ${event.completed} / ${event.total} 句`;
+  } else if (event.type === 'caption_complete') {
+    showEvent({type:'state',state:'watching',source:'captions'});
+    $('capture-status').textContent=event.source_only?'原文字幕已就緒 · 未使用翻譯 API':`已完成 ${event.completed} / ${event.total} 句${platform.kind==='extension'?' · 隨影片播放':' · 可下載字幕'}`;
   } else if (event.type === 'status') $('capture-status').textContent = event.message;
   else if (event.type === 'capture_started') {
     $('capture-status').textContent = event.delay_ms ? `畫面與聲音緩衝 ${event.delay_ms / 1000} 秒中…` : '正在擷取分頁音訊…';
@@ -143,6 +157,7 @@ function showEvent(event) {
     if (captionRows.size > 50) { const oldest = captionRows.keys().next().value; captionRows.get(oldest).parentElement.remove(); captionRows.delete(oldest); }
     $('captions').scrollTop = $('captions').scrollHeight;
   } else if (event.type === 'translation' || event.type === 'translation_error') {
+    if (!captionRows.has(event.id) && existingCueMap.has(event.id)) {const cue=existingCueMap.get(event.id);showEvent({type:'final',id:cue.id,text:cue.source});}
     const target = captionRows.get(event.id);
     if (target) {target.textContent = event.type === 'translation' ? event.text : `翻譯失敗：${event.message}`; target.classList.toggle('error', event.type === 'translation_error');}
     if (previewCue?.id === event.id && event.type === 'translation') {previewCue.translation=event.text; renderPreview();}
@@ -160,7 +175,7 @@ async function checkService() {
     const response = await fetch(platform.baseUrl + '/api/status', {signal: AbortSignal.timeout(5000)});
     if (!response.ok) throw new Error('無法連線到本機服務');
     const data = await response.json();
-    if (data.protocol_version !== 8) throw new Error('本機服務仍是舊版，請關閉舊服務並重新執行 start.bat');
+    if (data.protocol_version !== 9) throw new Error('本機服務仍是舊版，請關閉舊服務並重新執行 start.bat');
     models = data.models || [];
     const selected = $('stt-model').value || desiredModel;
     $('stt-model').replaceChildren(...models.map(model => {
@@ -233,6 +248,8 @@ $('test-translation').addEventListener('click', event => testTranslation(false, 
 $('test-chat-translation').addEventListener('click', event => testTranslation(true, event.currentTarget));
 $('start').addEventListener('click', async () => {
   // Web capture picker must open synchronously under the user gesture.
+  if ($('subtitle-source').value==='captions') {await startExistingSubtitles();return;}
+  existingCueMap.clear();
   const streamPromise = platform.beginCapture?.();
   showEvent({type: 'state', state: 'starting'});
   try {
@@ -286,7 +303,7 @@ $('export-transcript').addEventListener('click', async () => {
     $('timeline-hint').textContent = 'Web 無法讀取來源分頁播放位置，請填「開始擷取時」的影片時間。若暫停、跳轉或變速，停止後重新擷取並填新起點。';
     $('latency-info').textContent = 'Web 顯示字幕紀錄；影片與聲音依原分頁正常播放。';
   }
-  const saved = await platform.storage.local.get(['translation', 'chatTranslation', 'chatApiMode', 'recognition', 'captions', 'style', 'delayMs','lastTranscriptId']);
+  const saved = await platform.storage.local.get(['translation', 'chatTranslation', 'chatApiMode', 'recognition', 'captions', 'style', 'delayMs','lastTranscriptId','subtitleSource','captionUrl','lastCaptionId']);
   transcriptId=saved.lastTranscriptId || '';
   fillConfig(saved.translation || {}); fillConfig(saved.chatTranslation || {} , 'chat-');
   $('chat-api-mode').value = saved.chatApiMode || 'live';
@@ -298,6 +315,7 @@ $('export-transcript').addEventListener('click', async () => {
   $('caption-size').value = String(saved.captions?.size || 20); $('caption-mode').value = saved.captions?.mode || 'translated'; $('delay-ms').value = String(saved.delayMs ?? 2000);
   summaries();
   const state = await platform.runtime.sendMessage({target: 'worker', type: 'getState'});
+  await initializeCaptionSource(saved,state);
   showEvent({type: 'state', state: state?.session?.state || 'stopped'});
   await checkService().catch(() => {});
 })().catch(error => settingResult(error.message, true));

@@ -5,11 +5,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 def build(check=False):
-    mapping = {"panel.html": "index.html", "panel.css": "panel.css", "panel.js": "panel.js", "audio-worklet.js": "audio-worklet.js"}
+    mapping = {"panel.html": "index.html", "panel.css": "panel.css", "panel.js": "panel.js", "audio-worklet.js": "audio-worklet.js", "caption-transport.js":"caption-transport.js", "caption-ui.js":"caption-ui.js"}
     for source, target in mapping.items():
         data = (ROOT / "chrome-extension" / source).read_text(encoding="utf-8")
         if source == "panel.html":
-            for asset in ("panel.css", "platform.js", "panel.js"):
+            for asset in ("panel.css", "caption-transport.js", "caption-ui.js", "platform.js", "panel.js"):
                 data = data.replace(f'"{asset}"', f'"/static/{asset}"')
         path = ROOT / "web" / target
         if check:

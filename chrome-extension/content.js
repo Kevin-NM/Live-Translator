@@ -10,6 +10,7 @@ let delayMs = 0;
 let audioClockEpoch = null;
 let visualCaptureStarted = false;
 let partial = null;
+let mediaCaptions = false;
 let videoDelay = null;
 let captionSettings = {size: 20, mode: 'translated'};
 const captions = new Map();
@@ -173,6 +174,13 @@ function prepareVisual(requestedDelay) {
 }
 
 function selectCaption() {
+  if (mediaCaptions) {
+    const video = document.querySelector('.html5-video-player video') || document.querySelector('video');
+    const at = (video?.currentTime || 0)*1000;
+    let selected = null;
+    for (const item of captions.values()) if (item.start_ms<=at && at<item.end_ms && (!selected || item.start_ms>=selected.start_ms)) selected=item;
+    return selected;
+  }
   if (!active) return null;
   if (audioClockEpoch == null) {
     const last = [...captions.values()].at(-1);
@@ -214,7 +222,7 @@ function render() {
   ja.style.display = onlyTranslated ? 'none' : '-webkit-box';
   const zh = root.querySelector('.zh');
   const pages = captionPages(item?.zh);
-  const heardAt = audioClockEpoch == null ? 0 : (videoDelay?.pausedAt || Date.now()) - delayMs - audioClockEpoch;
+  const heardAt = mediaCaptions ? (document.querySelector('video')?.currentTime || 0)*1000 : audioClockEpoch == null ? 0 : (videoDelay?.pausedAt || Date.now()) - delayMs - audioClockEpoch;
   const begin = item?.display_start_ms ?? item?.start_ms ?? 0;
   const pageMs = Math.max(1600, ((item?.end_ms ?? begin) - begin) / pages.length);
   const page = Math.min(pages.length - 1, Math.max(0, Math.floor((heardAt - begin) / pageMs)));
@@ -244,14 +252,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ok: true}); return;
   }
   if (message.type === 'state') {
-    active = message.state === 'starting' || message.state === 'running';
+    active = ['starting','running','watching'].includes(message.state);
     if (message.provider) provider = message.provider;
     if (typeof message.delay_ms === 'number') delayMs = message.delay_ms;
     if (message.captions) captionSettings = {size: [16,20,24].includes(message.captions.size) ? message.captions.size : 20, mode: message.captions.mode};
     if (!active) {
       stopVideoDelay();
       captions.clear(); partial = null; audioClockEpoch = null; visualCaptureStarted = false;
+      mediaCaptions = false;
     }
+  } else if (message.type === 'captions_loaded') {
+    loadMediaCaptions(message.cues);
   } else if (message.type === 'caption_settings') {
     captionSettings = {size: [16,20,24].includes(message.captions?.size) ? message.captions.size : 20, mode: message.captions?.mode};
   } else if (message.type === 'capture_started') {
@@ -275,26 +286,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     partial = null;
     const item = {id: message.id, ja: message.text, zh: provider === 'none' ? '' : '翻譯中…', start_ms: message.start_ms ?? 0, end_ms: message.end_ms ?? 0};
     captions.set(message.id, item);
-    if (captions.size > 50) captions.delete(captions.keys().next().value);
+    if (!mediaCaptions && captions.size > 50) captions.delete(captions.keys().next().value);
   } else if ((message.type === 'translation' || message.type === 'translation_error') && captions.has(message.id)) {
     const item = captions.get(message.id);
     item.zh = message.type === 'translation' ? message.text : `翻譯失敗：${message.message}`;
     item.error = message.type === 'translation_error';
     item.translated = message.type === 'translation';
-    item.display_start_ms = Math.max(item.start_ms, audioClockEpoch == null ? item.start_ms : (videoDelay?.pausedAt || Date.now()) - delayMs - audioClockEpoch);
+    item.display_start_ms = mediaCaptions ? item.start_ms : Math.max(item.start_ms, audioClockEpoch == null ? item.start_ms : (videoDelay?.pausedAt || Date.now()) - delayMs - audioClockEpoch);
   }
   render();
 });
 
 setInterval(() => { if (active) { startVideoDelay(); render(); } }, 100);
 
-chrome.runtime.sendMessage({target: 'worker', type: 'getState'}).then(({session}) => {
+function loadMediaCaptions(cues) {
+  mediaCaptions = true; delayMs = 0; stopVideoDelay(); captions.clear(); partial=null;
+  for (const cue of cues || []) captions.set(cue.id,{id:cue.id,ja:cue.source,zh:cue.status==='translated' ? cue.translation:'',translated:cue.status==='translated',start_ms:cue.start_ms,end_ms:cue.end_ms});
+}
+
+chrome.runtime.sendMessage({target: 'worker', type: 'getState'}).then(({session,record}) => {
   if (!session) return;
-  active = session.state === 'starting' || session.state === 'running';
+  active = ['starting','running','watching'].includes(session.state);
   delayMs = session.delayMs || 0;
   audioClockEpoch = session.audioClockEpoch ?? null;
   visualCaptureStarted = Boolean(session.captureStarted);
   captionSettings = session.captions || captionSettings;
+  if (record && session.source === 'captions') {loadMediaCaptions(record.cues); provider=session.provider || 'nvidia';}
   startVideoDelay();
   render();
 }).catch(() => {});

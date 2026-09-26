@@ -5,14 +5,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const source = name => fs.readFileSync(path.join(__dirname, '../chrome-extension', name), 'utf8');
 
-function worker({missing = false, prepared = true, version = 8} = {}) {
+function worker({missing = false, prepared = true, version = 9, captionRecord} = {}) {
   const calls = [];
   const payloads = [];
   let listener;
   const chrome = {
     storage: {local: {get: async () => ({translation: {provider: 'none'}, delayMs: 2000}), set: async () => {}}, session: {get: async () => ({}), set: async () => {}, remove: async () => {}}},
     runtime: {onMessage: {addListener: fn => listener = fn}, getURL: x => x, getContexts: async () => [{}], sendMessage: async m => {calls.push(m.type); payloads.push(m); return {ok: true};}},
-    tabs: {get: async () => ({url: 'https://www.youtube.com/watch?v=test'}), onRemoved: {addListener() {}}, sendMessage: async (_, m) => {
+    tabs: {get: async () => ({url: 'https://www.youtube.com/watch?v='+(captionRecord?.caption_source.video_id || 'test')}), onRemoved: {addListener() {}}, sendMessage: async (_, m) => {
       calls.push(m.type);
       if (m.type === 'video_timeline') return {ok: true, media_ms: 120000, rate: 1.5};
       if (m.type === 'ping' && missing) throw Error('No receiver');
@@ -22,7 +22,7 @@ function worker({missing = false, prepared = true, version = 8} = {}) {
     tabCapture: {getMediaStreamId: async () => {calls.push('capture'); return 'stream';}},
     action: {onClicked: {addListener() {}}},
   };
-  vm.runInNewContext(source('background.js'), {chrome, crypto: {randomUUID: () => 'id'}, fetch: async () => ({ok: true, json: async () => ({protocol_version: version})})});
+  vm.runInNewContext(source('background.js'), {URL,connectCaptions:(_url,settings,notify)=>{calls.push('caption_socket');payloads.push(settings);return {close(){calls.push('caption_close');}};},importScripts() {}, chrome, crypto: {randomUUID: () => 'id'}, fetch: async url => ({ok: true, json: async () => url.includes('/api/transcripts/')?captionRecord:({protocol_version: version})})});
   const send = m => new Promise(resolve => listener({target: 'worker', ...m}, {}, resolve));
   return {calls, payloads, send};
 }
@@ -177,4 +177,32 @@ test('timeline anchors bridge only the active capture to its source player', asy
   assert.equal(anchor.sample_ms, 1000);
   assert.equal(anchor.media_ms, 120000);
   assert.equal(anchor.rate, 1.5);
+});
+
+test('whole existing subtitle track follows media seek and paused playback beyond 50 rows',()=>{
+  const o=overlay();
+  o.send({type:'state',state:'starting',provider:'nvidia',delay_ms:0});
+  const cues=Array.from({length:80},(_,id)=>({id,start_ms:id*1000,end_ms:(id+1)*1000,source:'source'+id,translation:'譯文'+id,status:'translated'}));
+  o.send({type:'captions_loaded',cues});
+  o.video.currentTime=79.5;o.video.paused=true;
+  o.send({type:'state',state:'watching'});
+  const parts=o.player.children[0].shadow.parts;
+  assert.equal(parts['.zh'].textContent,'譯文79');
+  o.video.currentTime=.5;
+  o.send({type:'caption_settings',captions:{size:16,mode:'translated'}});
+  assert.equal(parts['.zh'].textContent,'譯文0');
+  o.video.currentTime=90;
+  o.send({type:'caption_settings',captions:{size:16,mode:'translated'}});
+  assert.equal(parts['.box'].style.display,'none');
+});
+test('extension existing subtitle mode opens no tab audio capture or offscreen start',async()=>{
+  const w=worker({captionRecord:{caption_source:{video_id:'jNQXAC9IVRw'},cues:[]}});
+  const result=await w.send({type:'caption_start',tabId:1,transcript_id:'record'});
+  assert.equal(result.ok,true);
+  assert.ok(w.calls.includes('caption_socket'));
+  assert.ok(!w.calls.includes('capture'));
+  assert.ok(!w.calls.includes('start'));
+  assert.equal(w.payloads.find(item=>item.transcript_id==='record').position_ms,120000);
+  await w.send({type:'stop'});
+  assert.ok(w.calls.includes('caption_close'));
 });

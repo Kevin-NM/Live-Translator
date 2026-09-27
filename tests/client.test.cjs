@@ -91,61 +91,6 @@ test('source and reply language choices persist and timestamps parse video offse
   assert.throws(() => vm.runInContext("parseTime('01:99:00')",p.context));
 });
 
-function web(hasAudio = true, suppressed = false) {
-  let settings = '{}'; let processor; let socket; let stopped = 0; let connections = 0;
-  const track = {getSettings:()=>({suppressLocalAudioPlayback:suppressed}),stop() {stopped++;},addEventListener() {}};
-  const stream = {getAudioTracks: () => hasAudio ? [track] : [], getTracks: () => [track]};
-  class Socket {
-    static OPEN = 1;
-    readyState = 1; sent = [];
-    constructor() {socket = this;}
-    send(data) {this.sent.push(data);}
-    close() {this.readyState = 3;}
-  }
-  class Context {
-    audioWorklet = {addModule: async () => {}};
-    createMediaStreamSource() {return {connect(node) {connections++; return node;},disconnect() {}};}
-    createDelay() {return {delayTime:{value:0},connect(){},disconnect(){}};}
-    createGain() {return {gain:{value:1},connect() {connections++;}};}
-    resume() {return Promise.resolve();}
-    close() {return Promise.resolve();}
-  }
-  class Processor {
-    port = {};
-    constructor() {processor = this;}
-    connect(node) {assert.equal(node.gain.value,0); connections++; return node;}
-    disconnect() {}
-  }
-  const sandbox = {performance:{now:()=>0},createWebVideoDelay:()=>({stop(){}}),document:{getElementById:()=>({value:'0'})},window:{addEventListener() {}}, navigator:{mediaDevices:{getDisplayMedia:async () => stream}},location:{origin:'http://127.0.0.1:8788'},localStorage:{getItem:() => settings,setItem:(_,value) => settings=value},AudioContext:Context,AudioWorkletNode:Processor,WebSocket:Socket,setTimeout,clearTimeout,setInterval,clearInterval};
-  sandbox.window = sandbox; sandbox.addEventListener = () => {};
-  vm.runInNewContext(read('chrome-extension/caption-transport.js'),sandbox);
-  vm.runInNewContext(read('web/platform.js'),sandbox);
-  const events = []; sandbox.platform.runtime.onMessage.addListener(event => events.push(event));
-  return {platform:sandbox.platform,events,stream,get socket(){return socket;},get processor(){return processor;},get stopped(){return stopped;},get connections(){return connections;}};
-}
-test('Web capture validates shared audio and releases tracks on failure',async () => {
-  const w = web(false); w.platform.pendingStream = await w.platform.beginCapture();
-  const result = await w.platform.runtime.sendMessage({type:'start'});
-  assert.equal(result.ok,false); assert.match(result.error,/分享分頁音訊/);
-  assert.equal(w.stopped,1); assert.equal(w.connections,0);
-});
-test('Web PCM begins only after ready, keeps audio muted, and flushes EOS on stop',async () => {
-  const w = web();
-  await w.platform.storage.local.set({translation:{provider:'none'},recognition:{model:'small'}});
-  w.platform.pendingStream = await w.platform.beginCapture();
-  assert.equal((await w.platform.runtime.sendMessage({type:'start'})).ok,true);
-  w.socket.onopen();
-  assert.equal(JSON.parse(w.socket.sent[0]).recognition.model,'small');
-  const pcm = new ArrayBuffer(6400);
-  w.processor.port.onmessage({data:pcm}); assert.equal(w.socket.sent.length,1);
-  w.socket.onmessage({data:JSON.stringify({type:'ready'})});
-  w.processor.port.onmessage({data:pcm}); assert.equal(w.socket.sent[1],pcm);
-  await w.platform.runtime.sendMessage({type:'stop'});
-  assert.equal(JSON.parse(w.socket.sent[2]).type,'eos'); assert.equal(w.stopped,1);
-  w.socket.onclose(); await tick();
-  assert.equal(w.events.at(-1).state,'stopped');
-});
-
 test('existing captions are an explicit source and loading never calls translation or audio',async()=>{
   const p=panel({subtitleSource:'captions'});await tick();
   assert.equal(p.elements.get('existing-caption-tools').hidden,false);
@@ -162,24 +107,6 @@ test('existing captions are an explicit source and loading never calls translati
   assert.ok(!p.runtimeCalls.some(call=>call.type==='start'));
   assert.equal(p.storage.subtitleSource,'captions');
 });
-test('subtitle-only Web start does not request sharing or create audio nodes',async()=>{
-  const w=web();
-  await w.platform.runtime.sendMessage({type:'caption_start',transcript_id:'record'});
-  assert.equal(w.connections,0);
-  w.socket.onopen();
-  assert.equal(JSON.parse(w.socket.sent[0]).transcript_id,'record');
-  w.socket.onmessage({data:JSON.stringify({type:'caption_complete',completed:1,total:1})});
-  w.socket.onclose();
-  assert.equal(w.events.at(-1).state,'watching');
-  await w.platform.runtime.sendMessage({type:'stop'});
-  assert.equal(w.events.at(-1).state,'stopped');
-  assert.equal(w.stopped,0);
-  await w.platform.runtime.sendMessage({type:'caption_start',transcript_id:'record'});
-  w.socket.onmessage({data:JSON.stringify({type:'error',message:'Bad API setting'})});
-  w.socket.onclose();await tick();
-  assert.equal(w.events.at(-1).error,'Bad API setting');
-});
-
 test('independent subtitle configuration survives switching to live API; flexible appearance persists',async()=>{
   const live={provider:'custom',model:'live',endpoint:'http://localhost:1234/chat/completions',target_language:'fr'};
   const independent={provider:'custom',model:'batch-model',endpoint:'http://localhost:4321/chat/completions',api_key:''};
@@ -194,65 +121,6 @@ test('independent subtitle configuration survives switching to live API; flexibl
   assert.equal(p.storage.captions.opacity,0);assert.equal(p.storage.captionTranslationMode,'batch');
   p.elements.get('caption-api-mode').value='independent';
   assert.equal(vm.runInContext('captionConfig().model',p.context),'batch-model');
-});
-
-test('Web subtitle transport sends selected independent model and explicit batch mode',async()=>{
-  const w=web();
-  await w.platform.storage.local.set({translation:{provider:'none'},captionApiMode:'independent',captionTranslation:{provider:'custom',model:'subtitle-model'},captionTranslationMode:'batch'});
-  await w.platform.runtime.sendMessage({type:'caption_start',transcript_id:'record'});
-  w.socket.onopen();const settings=JSON.parse(w.socket.sent[0]);
-  assert.equal(settings.translation.model,'subtitle-model');assert.equal(settings.caption_mode,'batch');
-  await w.platform.runtime.sendMessage({type:'stop'});
-});
-
-test('Web viewer selects complete track by player clock and scales captions in fullscreen',async()=>{
-  const elements=new Map();const handlers={};let playerTime=0;let destroyed=0;
-  for(const id of ['viewer-stage','viewer-info','preview-caption','web-preview','preview-video','youtube-player','viewer-fullscreen','viewer-exit','caption-smaller','caption-larger','caption-size','caption-mode']) {
-    elements.set(id,{classList:{remove(){},contains(){return false;}},style:{},hidden:false,clientWidth:800,value:id==='caption-mode'?'bilingual':'32',addEventListener:(type,fn)=>{handlers[id+type]=fn;},prepend(item){elements.set(item.id,item);},remove(){elements.delete(id);}});
-  }
-  const cues=new Map([[1,{id:1,start_ms:1000,end_ms:2000,source:'source one',translation:'translation one',status:'translated'}],[80,{id:80,start_ms:80000,end_ms:85000,source:'source eighty',translation:'translation eighty',status:'translated'}]]);
-  const platform={};const stage=elements.get('viewer-stage');stage.requestFullscreen=async()=>{};
-  const document={body:{style:{}},getElementById:id=>elements.get(id),createElement:()=>({remove(){elements.delete(this.id);}}),addEventListener(){}};
-  const sandbox={platform,document,existingCueMap:cues,loadedCaption:null,captionConfig:()=>({provider:'custom'}),captionAppearance:()=>({size:32,bottom:12,width:80,opacity:60}),save:async()=>{},location:{origin:'http://localhost:8791'},ResizeObserver:class{observe(){}},setInterval:()=>1,clearInterval(){},setTimeout,clearTimeout,YT:{Player:class {constructor(id,options){this.options=options;}getCurrentTime(){return playerTime;}destroy(){destroyed++;}}}};
-  sandbox.window=sandbox;sandbox.addEventListener=()=>{};vm.runInNewContext(read('web/viewer.js'),sandbox);
-  platform.viewer.initialize();platform.viewer.sourceChanged(true);await platform.viewer.load('jNQXAC9IVRw');
-  playerTime=80.5;platform.viewer.render();assert.equal(elements.get('preview-caption').textContent,'source eighty\ntranslation eighty');
-  playerTime=1.5;platform.viewer.render();assert.equal(elements.get('preview-caption').textContent,'source one\ntranslation one');
-  playerTime=2.5;platform.viewer.render();assert.equal(elements.get('preview-caption').textContent,'');
-  stage.clientWidth=1600;platform.viewer.render();assert.equal(elements.get('preview-caption').style.fontSize,'64px');
-  assert.equal(elements.get('preview-caption').style.bottom,'12%');
-  await handlers['viewer-fullscreenclick']();platform.viewer.sourceChanged(false);assert.equal(destroyed,1);
-});
-
-test('Web delayed audio refuses unsuppressed source; supported source starts only after ready',async()=>{
-  const rejected=web();await rejected.platform.storage.local.set({delayMs:6000,translation:{provider:'none'}});
-  rejected.platform.pendingStream=rejected.stream;
-  const result=await rejected.platform.runtime.sendMessage({type:'start'});
-  assert.equal(result.ok,false);assert.match(result.error,/抑制原分頁聲音/);assert.equal(rejected.connections,0);
-  const supported=web(true,true);await supported.platform.storage.local.set({delayMs:12000,translation:{provider:'none'}});
-  supported.platform.pendingStream=supported.stream;
-  assert.equal((await supported.platform.runtime.sendMessage({type:'start'})).ok,true);
-  const before=supported.connections;supported.socket.onmessage({data:'{"type":"ready"}'});
-  assert.equal(supported.connections,before+1);assert.equal(supported.platform.liveDelayMs,12000);
-  supported.socket.onmessage({data:'{"type":"ready"}'});assert.equal(supported.connections,before+1);
-  await supported.platform.runtime.sendMessage({type:'stop'});supported.socket.onclose();await tick();
-  assert.equal(supported.platform.liveDelayMs,0);
-});
-
-test('Web video delay waits correct time, bounds frame memory and clears its pool',()=>{
-  let now=0,paint,allocations=0;const canvases=[];let painted=0;
-  const video={readyState:4,videoWidth:1920,videoHeight:1080,hidden:false};
-  const canvas={width:0,height:0,getContext:()=>({drawImage(){painted++;}})};
-  const sandbox={window:{},platform:{runtime:{sendMessage:async()=>{}}},performance:{now:()=>now},document:{createElement:()=>{allocations++;const item={width:0,height:0,getContext:()=>({drawImage(){}})};canvases.push(item);return item;}},setInterval:fn=>{paint=fn;return 1;},clearInterval(){}};
-  vm.runInNewContext(read('web/video-delay.js'),sandbox);
-  const buffer=sandbox.window.createWebVideoDelay(video,canvas,6000);
-  for(let frame=0;frame<85;frame++){now=frame*1000/15;paint();}
-  assert.equal(painted,0);
-  for(let frame=85;frame<1500;frame++){now=frame*1000/15;paint();}
-  assert.ok(painted>1000);assert.ok(allocations<=95);
-  assert.ok(canvases.reduce((sum,frame)=>sum+frame.width*frame.height,0)<=95*640*360);
-  buffer.stop();assert.equal(canvas.hidden,true);assert.equal(video.hidden,false);
-  assert.ok(canvases.every(frame=>frame.width===0 && frame.height===0));
 });
 
 test('protocol mismatch reports actual service version instead of assuming old backend',async()=>{

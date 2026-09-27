@@ -11,12 +11,11 @@ def build(check=False):
     mapping = {"panel.html": "index.html", "panel.css": "panel.css", "panel.js": "panel.js", "audio-worklet.js": "audio-worklet.js", "caption-transport.js":"caption-transport.js", "caption-ui.js":"caption-ui.js"}
     assets = {target: (ROOT / "chrome-extension" / source).read_text(encoding="utf-8")
               for source, target in mapping.items()}
-    for name in ("platform.js", "viewer.js", "video-delay.js"):
+    for name in ("platform.js",):
         assets[name] = (ROOT / "web" / name).read_text(encoding="utf-8")
     html = assets["index.html"]
     for name in ("panel.css", "caption-transport.js", "caption-ui.js", "platform.js", "panel.js"):
         html = html.replace(f'"{name}"', f'"/static/{name}"')
-    html = html.replace('<script src="/static/panel.js"></script>', '<script src="/static/video-delay.js"></script><script src="/static/viewer.js"></script><script src="/static/panel.js"></script>')
     def version(match):
         name = match.group(1)
         digest = hashlib.sha256(assets[name].encode("utf-8")).hexdigest()[:16]

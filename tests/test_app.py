@@ -327,7 +327,7 @@ class UiCacheTests(unittest.TestCase):
         page = client.get('/')
         self.assertEqual(page.headers['cache-control'], 'no-store')
         urls = re.findall(r'(?:src|href)="(/static/[^"?]+)\?v=([a-f0-9]{16})"', page.text)
-        self.assertEqual({path for path, _ in urls}, {'/static/panel.css','/static/caption-transport.js','/static/caption-ui.js','/static/platform.js','/static/video-delay.js','/static/viewer.js','/static/panel.js'})
+        self.assertEqual({path for path, _ in urls}, {'/static/panel.css','/static/caption-transport.js','/static/caption-ui.js','/static/platform.js','/static/panel.js'})
         for path, digest in urls:
             response = client.get(path + '?v=' + digest)
             self.assertEqual(response.status_code, 200)
@@ -347,7 +347,7 @@ class UiCacheTests(unittest.TestCase):
             (root/'web').mkdir(); (root/'chrome-extension').mkdir()
             for path in (build_ui.ROOT/'chrome-extension').iterdir():
                 if path.is_file(): (root/'chrome-extension'/path.name).write_bytes(path.read_bytes())
-            for name in ('platform.js','viewer.js','video-delay.js'):
+            for name in ('platform.js',):
                 (root/'web'/name).write_bytes((build_ui.ROOT/'web'/name).read_bytes())
             with patch.object(build_ui,'ROOT',root):
                 build_ui.build(); first = (root/'web/index.html').read_bytes()

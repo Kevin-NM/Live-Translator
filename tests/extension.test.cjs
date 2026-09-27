@@ -22,7 +22,8 @@ function worker({missing = false, prepared = true, version = 10, captionRecord} 
     tabCapture: {getMediaStreamId: async () => {calls.push('capture'); return 'stream';}},
     action: {onClicked: {addListener() {}}},
   };
-  vm.runInNewContext(source('background.js'), {URL,connectCaptions:(_url,settings,notify)=>{calls.push('caption_socket');payloads.push(settings);return {close(){calls.push('caption_close');}};},importScripts() {}, chrome, crypto: {randomUUID: () => 'id'}, fetch: async url => ({ok: true, json: async () => url.includes('/api/transcripts/')?captionRecord:({protocol_version: version})})});
+  const context=vm.createContext({URL,AbortSignal,connectCaptions:(_url,settings,notify)=>{calls.push('caption_socket');payloads.push(settings);return {close(){calls.push('caption_close');}};},importScripts(name) {if(name==='web-control.js')vm.runInContext(source(name),context);}, chrome, crypto: {randomUUID: () => 'id'}, fetch: async url => ({ok: true, json: async () => url.includes('/api/transcripts/')?captionRecord:({protocol_version: version})})});
+  vm.runInContext(source('background.js'),context);
   const send = m => new Promise(resolve => listener({target: 'worker', ...m}, {}, resolve));
   return {calls, payloads, send};
 }

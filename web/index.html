@@ -1,16 +1,17 @@
 <!doctype html>
 <html lang="zh-Hant">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Live Translator</title><link rel="stylesheet" href="/static/panel.css?v=86dbae92c829e017"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Live Translator</title><link rel="stylesheet" href="/static/panel.css?v=dbc75a1219e2f5fc"></head>
 <body>
 <a class="skip" href="#main">跳到主要內容</a>
 <div class="shell">
-  <header><div class="brand"><span class="brand-mark" aria-hidden="true">LT</span><div><strong>Live Translator</strong><small>聽懂直播，加入對話。</small></div></div><span class="version">0.9.0</span></header>
+  <header><div class="brand"><span class="brand-mark" aria-hidden="true">LT</span><div><strong>Live Translator</strong><small>聽懂直播，加入對話。</small></div></div><span class="version">0.9.1</span></header>
   <div class="connection"><span id="model-state" role="status">正在連線本機服務…</span><button id="refresh-service" class="quiet">重新檢查</button></div>
   <nav aria-label="主要功能"><button class="selected" data-page="live" aria-current="page">即時字幕</button><button data-page="chat">留言助手</button><button data-page="settings">模型與設定</button></nav>
   <main id="main">
     <section id="live" class="page active">
       <div class="live-layout"><div class="live-controls">
         <p class="eyebrow">LIVE CAPTIONS</p><h1>專心看直播。<br>字幕交給我們。</h1><p id="capture-description">擷取 YouTube 分頁音訊，將譯文顯示在影片上。</p>
+        <div id="web-controls" hidden><label for="youtube-tab">要控制的 YouTube 分頁</label><select id="youtube-tab" aria-describedby="bridge-status"><option value="">先開啟 YouTube 影片</option></select><button id="refresh-youtube-tabs" class="quiet">更新分頁</button><p id="bridge-status" class="hint" role="status"></p></div>
         <label for="subtitle-source">字幕來源</label><select id="subtitle-source"><option value="audio">即時語音辨識（直播／沒有字幕的影片）</option><option value="captions">影片現有字幕（不擷取聲音）</option></select>
         <div id="existing-caption-tools" hidden><label for="caption-url">YouTube 影片網址</label><input id="caption-url" type="url" placeholder="https://www.youtube.com/watch?v=..."><button id="load-caption-tracks" class="quiet">讀取字幕列表</button><label for="caption-track">影片字幕軌道</label><select id="caption-track"><option value="">先讀取字幕列表</option></select><button id="load-selected-caption" class="quiet" disabled>載入選定字幕</button><p id="caption-source-info" class="hint" role="status">可選人工或自動字幕；不支援直接燒在畫面裡的文字。翻譯可使用獨立字幕 API，分批翻譯可能產生費用，載入後再按開始。</p></div>
         <div class="session-status"><span class="status-dot" aria-hidden="true"></span><span id="capture-status" role="status">已停止</span></div>
@@ -19,7 +20,6 @@
         <dl class="session-summary"><div><dt>辨識模型</dt><dd id="summary-stt">Large v3 Turbo</dd></div><div><dt>直播翻譯</dt><dd id="summary-api">尚未設定</dd></div><div><dt>輸出語言</dt><dd id="summary-language">繁體中文（台灣）</dd></div></dl>
         <button class="text-button" data-open-settings>調整字幕與 API →</button>
       </div><div class="transcript">
-        <div id="web-preview" class="web-preview" hidden><div id="viewer-stage" class="viewer-stage"><button id="viewer-exit" class="viewer-exit" hidden>離開全螢幕</button><div id="youtube-player" hidden></div><video id="preview-video" autoplay muted playsinline></video><canvas id="preview-delayed-video" hidden></canvas><div id="preview-caption" class="preview-caption"></div></div><div class="viewer-actions"><button id="viewer-fullscreen" class="quiet">全螢幕觀看</button><button id="caption-smaller" class="quiet" aria-label="縮小字幕">A−</button><button id="caption-larger" class="quiet" aria-label="放大字幕">A＋</button></div><p id="viewer-info" class="hint">即時擷取的聲音由來源分頁播放；現有字幕可在此播放影片。</p></div>
         <div class="section-heading"><h2>字幕紀錄</h2><button id="clear-captions" class="quiet">清除畫面</button></div><p id="partial" class="partial" aria-live="polite"></p><div id="captions" class="captions" aria-label="字幕紀錄"><p class="muted empty">還沒有字幕<br><small>開始擷取後，原文與譯文會保留在這裡。</small></p></div>
         <div class="export-tools"><h2>轉錄與匯出</h2><p class="hint">整場文字保存於本機，可在停止擷取、完成翻譯後匯出；清除畫面不會刪除轉錄。</p>
           <label for="transcript-session">轉錄紀錄</label><select id="transcript-session"><option value="">尚無轉錄</option></select><button id="refresh-transcripts" class="quiet">重新整理紀錄</button>
@@ -80,5 +80,5 @@
     <datalist id="api-models"><option value="google/gemma-4-31b-it"><option value="gpt-4.1-mini"><option value="nvidia/riva-translate-4b-instruct-v2"></datalist>
   </main><footer>本機辨識 · 自選翻譯 API <span>Live Translator / MIT</span></footer>
 </div>
-<script src="/static/caption-transport.js?v=df4edcb1390b4751"></script><script src="/static/caption-ui.js?v=063793a1a40b6fc4"></script><script src="/static/platform.js?v=9e1dba94e3d2ad9e"></script><script src="/static/video-delay.js?v=0858ff23b7baa045"></script><script src="/static/viewer.js?v=3b133f36824e0488"></script><script src="/static/panel.js?v=c11fa503d5ee116f"></script>
+<script src="/static/caption-transport.js?v=df4edcb1390b4751"></script><script src="/static/caption-ui.js?v=666be37da54ddeb6"></script><script src="/static/platform.js?v=3587a9c2cb104d58"></script><script src="/static/panel.js?v=84977e2f36bbb71e"></script>
 </body></html>

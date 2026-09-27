@@ -82,7 +82,7 @@ async def index():
 
 @app.get("/api/status")
 async def status():
-    return {"version": "0.9.0", "languages": LANGUAGES, "model_ready": model_ready(DEFAULT_MODEL), "models": list_models(), "protocol_version": PROTOCOL_VERSION, "presets": {key: {"endpoint": value[0], "model": value[1]} for key, value in PRESETS.items()}}
+    return {"version": "0.9.1", "languages": LANGUAGES, "model_ready": model_ready(DEFAULT_MODEL), "models": list_models(), "protocol_version": PROTOCOL_VERSION, "presets": {key: {"endpoint": value[0], "model": value[1]} for key, value in PRESETS.items()}}
 
 
 @app.post("/api/translate")

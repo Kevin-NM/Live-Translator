@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Live Translator 直播字幕",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "minimum_chrome_version": "116",
   "description": "擷取 YouTube 分頁音訊，辨識多語音訊並將譯文顯示在影片上。",
   "permissions": ["tabCapture", "offscreen", "storage", "sidePanel", "tabs", "scripting"],
@@ -9,5 +9,8 @@
   "background": {"service_worker": "background.js"},
   "side_panel": {"default_path": "panel.html"},
   "action": {"default_title": "開啟直播字幕"},
-  "content_scripts": [{"matches": ["https://www.youtube.com/*"], "js": ["content.js"], "run_at": "document_idle"}]
+  "content_scripts": [
+    {"matches": ["https://www.youtube.com/*"], "js": ["content.js"], "run_at": "document_idle"},
+    {"matches": ["http://127.0.0.1/*"], "js": ["web-bridge.js"], "run_at": "document_start"}
+  ]
 }

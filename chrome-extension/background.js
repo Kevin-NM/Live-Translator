@@ -25,6 +25,7 @@ async function offscreenReady() {
 
 async function broadcast(message) {
   chrome.runtime.sendMessage({target: 'panel', ...message}).catch(() => {});
+  webBroadcast(message);
   if (!session?.tabId) return true;
   try {
     await chrome.tabs.sendMessage(session.tabId, {target: 'overlay-v3', ...message});
@@ -52,7 +53,7 @@ async function start(tabId) {
   const tab = await chrome.tabs.get(tabId);
   if (!tab.url?.startsWith('https://www.youtube.com/')) throw new Error('請先開啟 YouTube 影片分頁。');
   await restoreSession();
-  if (session) await stop();
+  if (session) throw new Error('已有字幕工作，請先停止再開始。');
   const {translation = {provider: 'nvidia'}, recognition = {quality: 'accurate'}, captions = {size: 20, mode: 'translated'}, delayMs: storedDelay = 2000} = await chrome.storage.local.get(['translation', 'recognition', 'captions', 'delayMs']);
   recognition.previews = captions.mode === 'bilingual' || translation.provider === 'none';
   const delayMs = [0, 2000, 4000, 6000, 8000, 10000, 12000].includes(Number(storedDelay)) ? Number(storedDelay) : 2000;
@@ -77,7 +78,7 @@ async function start(tabId) {
   session = {id, tabId, state: 'starting', delayMs, captions};
   await saveSession();
   try {
-    if (!(await broadcast({type: 'state', state: 'starting', tabId, provider: translation.provider, delay_ms: delayMs, captions}))) {
+    if (!(await broadcast({type: 'state', state: 'starting', source:'audio', tabId, provider: translation.provider, delay_ms: delayMs, captions}))) {
       throw new Error('YouTube 字幕層無法接收啟動訊息。');
     }
     const result = await chrome.runtime.sendMessage({target: 'offscreen', type: 'start', id, tabId, streamId, translation, recognition, delayMs});
@@ -103,6 +104,7 @@ async function stop() {
   session.state = 'stopping';
   await saveSession();
   await broadcast({type: 'state', state: 'stopping'});
+  if (current.owner === 'web') {await webOwner({type:'stop'}); return;}
   await chrome.runtime.sendMessage({target: 'offscreen', type: 'stop', id: current.id}).catch(() => {});
 }
 
@@ -110,13 +112,15 @@ async function startCaptions(tabId, identity) {
   const tab = await chrome.tabs.get(tabId);
   const currentVideo = new URL(tab.url || '').searchParams.get('v');
   if (!tab.url?.startsWith('https://www.youtube.com/watch?')) throw new Error('請切換到 YouTube 影片頁面');
-  await restoreSession(); if (session) await stop();
-  const response = await fetch('http://127.0.0.1:8788/api/transcripts/'+encodeURIComponent(identity));
+  await restoreSession();
+  if (session?.source === 'captions') await stop();
+  else if (session) throw new Error('已有音訊工作，請先停止再開始。');
+  const response = await fetch('http://127.0.0.1:8788/api/transcripts/'+encodeURIComponent(identity),{signal:AbortSignal.timeout(5000)});
   if (!response.ok) throw new Error('找不到影片字幕，請重新載入');
   const record = await response.json();
   if (record.caption_source?.video_id !== currentVideo) throw new Error('目前影片與已載入字幕不同，請重新讀取字幕');
   const settings = await chrome.storage.local.get(['translation','captions','captionApiMode','captionTranslation','captionTranslationMode']);
-  const chosen=settings.captionApiMode==='independent'?settings.captionTranslation:settings.translation;
+  const chosen=settings.captionApiMode==='independent'?{...settings.translation,...settings.captionTranslation}:settings.translation;
   await ensureOverlay(tabId,0);
   const clock = await chrome.tabs.sendMessage(tabId,{target:'overlay-v3',type:'video_timeline',epoch_ms:Date.now()});
   const current = session = {id:crypto.randomUUID(),tabId,source:'captions',provider:chosen?.provider || 'none',state:'starting',delayMs:0,captions:settings.captions || {size:20,mode:'translated'},transcriptId:identity,videoId:currentVideo};
@@ -180,7 +184,7 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 });
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+function handleWorkerMessage(message, sender, sendResponse) {
   if (message.target === 'worker') {
     if (message.type === 'youtube_tracks' || message.type === 'youtube_fetch') {
       chrome.scripting.executeScript({target:{tabId:message.tabId},world:'MAIN',func:readPageCaptions,args:[message.type === 'youtube_fetch' ? message.track_key : null]})
@@ -201,11 +205,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     if (message.type === 'getState') {
       restoreSession().then(async () => {
-        const shown = sender.tab && sender.tab.id !== session?.tabId ? null : session;
+        const shown = !sender.webControl && sender.tab && sender.tab.id !== session?.tabId ? null : session;
         let record;
-        if (shown?.source === 'captions' && sender.tab) record=await fetch('http://127.0.0.1:8788/api/transcripts/'+encodeURIComponent(shown.transcriptId)).then(response => response.ok ? response.json():null).catch(() => null);
+        if (shown?.source === 'captions' && sender.tab) record=await fetch('http://127.0.0.1:8788/api/transcripts/'+encodeURIComponent(shown.transcriptId),{signal:AbortSignal.timeout(5000)}).then(response => response.ok ? response.json():null).catch(() => null);
         sendResponse({session:shown,record});
-      });
+      }).catch(error=>sendResponse({ok:false,error:error.message}));
       return true;
     }
     if (message.type === 'start') {
@@ -234,6 +238,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           session.audioClockEpoch += message.gap_ms || 0;
           await saveSession();
         }
+        if (session.owner === 'web') return webOwner({type:'playback',paused:message.paused});
         return chrome.runtime.sendMessage({target: 'offscreen', type: 'playback', id: session.id, paused: message.paused});
       }).then(sendResponse).catch(error => sendResponse({ok: false, error: error.message}));
       return true;
@@ -246,7 +251,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         await stop();
         sendResponse({ok: true});
-      });
+      }).catch(error=>sendResponse({ok:false,error:error.message}));
       return true;
     }
     if (message.type === 'event') {
@@ -259,7 +264,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
           if (event.type === 'timeline_request') {
             const timeline = await chrome.tabs.sendMessage(session.tabId,{target:'overlay-v3',type:'video_timeline',epoch_ms:event.epoch_ms}).catch(() => null);
-            if (timeline?.ok) await chrome.runtime.sendMessage({target:'offscreen',type:'media_timeline',id:session.id,sample_ms:event.sample_ms,media_ms:timeline.media_ms,rate:timeline.rate});
+            if (timeline?.ok) {
+              const data={type:'media_timeline',sample_ms:event.sample_ms,media_ms:timeline.media_ms,rate:timeline.rate};
+              if (session.owner==='web') await webOwner(data);
+              else await chrome.runtime.sendMessage({target:'offscreen',id:session.id,...data});
+            }
             sendResponse({ok:true}); return;
           }
           if (event.type === 'capture_started') session.captureStarted = true;
@@ -282,6 +291,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
   }
-});
+}
+chrome.runtime.onMessage.addListener(handleWorkerMessage);
+importScripts('web-control.js');
 
 chrome.tabs.onRemoved.addListener(tabId => { if (session?.tabId === tabId) stop(); });

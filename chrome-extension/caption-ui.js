@@ -5,14 +5,13 @@ const existingCueMap = new Map();
 function subtitleSourceChanged() {
   const existing=$('subtitle-source').value==='captions';
   $('existing-caption-tools').hidden=!existing;
-  $('start').textContent=existing?'開始／繼續翻譯影片字幕':platform.kind==='web'?'選擇分頁並開始':'開始擷取目前分頁';
+  $('start').textContent=existing?'開始／繼續翻譯影片字幕':platform.kind==='web'?'分享選定分頁並開始':'開始擷取目前分頁';
   $('start').disabled=running || (existing && !loadedCaption);
-  $('capture-description').textContent=existing?'讀取整份現有字幕，自動分批翻譯；可設定獨立字幕模型，保留影片原始時間。':platform.kind==='web'?'選擇 Chrome 分頁並勾選「分享分頁音訊」，在這裡觀看即時字幕。使用觀看區的全螢幕與字幕大小按鈕調整閱讀。':'擷取 YouTube 分頁音訊，將譯文顯示在影片上。';
-  $('timeline-hint').textContent=existing?'現有字幕保留原始影片時間，一般不需要手動修正。':platform.kind==='web'?'Web 無法讀取來源分頁播放位置，請填開始擷取時的影片時間。暫停、跳轉或變速後請重新擷取。':'YouTube 自動校準影片時間；也可手動修正起點。';
+  $('capture-description').textContent=existing?'讀取整份現有字幕，自動分批翻譯；可設定獨立字幕模型，保留影片原始時間。':platform.kind==='web'?'選擇要控制的 YouTube 分頁，再分享同一分頁的音訊。字幕顯示在原影片；可在 WebUI 或擴充功能操作。':'擷取 YouTube 分頁音訊，將譯文顯示在影片上。';
+  $('timeline-hint').textContent=existing?'現有字幕保留原始影片時間，一般不需要手動修正。':platform.kind==='web'?'自動讀取原影片時間。觀看延遲期間跳轉影片需停止後重新開始。':'YouTube 自動校準影片時間；也可手動修正起點。';
   $('summary-stt').textContent=existing?'使用影片字幕 · 不需 GPU':$('stt-model').value || desiredModel;
   summaries();
-  platform.viewer?.sourceChanged(existing);
-  if (existing) $('latency-info').textContent=platform.kind==='web'?'在此播放影片，字幕隨暫停、跳轉、倍速同步；也可匯出。':'字幕依影片時間顯示，暫停／跳轉／倍速跟隨播放器；不使用觀看延遲。';
+  if (existing) $('latency-info').textContent=platform.kind==='web'?'在原 YouTube 分頁觀看；字幕隨暫停、跳轉、倍速同步，也可匯出。':'字幕依影片時間顯示，暫停／跳轉／倍速跟隨播放器；不使用觀看延遲。';
 }
 async function youtubeRequest(path, body) {
   const response=await fetch(platform.baseUrl+'/api/youtube/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(60000)});
@@ -26,12 +25,12 @@ async function loadSubtitleTracks() {
   try {
     await checkService();
     let url=$('caption-url').value.trim(), tab;
-    if (platform.kind==='extension') {
+    if (platform.kind==='extension' || platform.kind==='web') {
       [tab]=await platform.tabs.query({active:true,currentWindow:true});
       if (!url) url=tab?.url || '';
     }
     if (!url) throw new Error('請輸入 YouTube 影片網址');
-    loadedCaption=null; existingCueMap.clear(); platform.viewer?.reset?.(); captionTrackContext=null; $('load-selected-caption').disabled=true;
+    loadedCaption=null; existingCueMap.clear(); captionTrackContext=null; $('load-selected-caption').disabled=true;
     let data;
     if (tab?.url===url) data=await platform.runtime.sendMessage({target:'worker',type:'youtube_tracks',tabId:tab.id});
     const browser=Boolean(data?.ok && data.tracks?.length);

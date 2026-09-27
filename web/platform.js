@@ -1,142 +1,159 @@
-// Browser transport for the shared UI. No Chrome extension APIs required.
+// WebUI controls the original YouTube tab through the extension's local bridge.
 (() => {
-  const listeners = [];
-  let active = null;
-  const emit = event => listeners.forEach(listener => listener({target: 'panel', ...event}));
-  const storage = {
-    async get(keys) {
-      const values = JSON.parse(localStorage.getItem('liveTranslator.settings') || '{}');
-      return Object.fromEntries(keys.filter(key => key in values).map(key => [key, values[key]]));
-    },
-    async set(values) {
-      const previous = JSON.parse(localStorage.getItem('liveTranslator.settings') || '{}');
-      localStorage.setItem('liveTranslator.settings', JSON.stringify({...previous, ...values}));
-    },
-  };
-  async function release(session, finish = false) {
-    if (!session || session.closed || (finish && session.stopping)) return;
-    session.stopping = true; session.ready = false;
-    if (session.captionConnection) {
-      session.closed=true; session.captionConnection.close();
-      if (active===session) {active=null; emit({type:'state',state:'stopped',error:session.error});} return;
+  const listeners=[], pending=new Map();
+  let channel=null, active=null, selected=null, prepared=null;
+  const emit=event=>listeners.forEach(listener=>listener({target:'panel',...event}));
+  const missing='尚未連接字幕橋接。請在 Chrome 載入新版擴充功能，再重新整理此頁（http://127.0.0.1:8788/）。操作可全程在 WebUI 完成。';
+  function rpc(method,args={}) {
+    if (!channel) return Promise.reject(new Error(missing));
+    const id=crypto.randomUUID();
+    return new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>{pending.delete(id);reject(new Error('字幕橋接逾時，請重新整理 WebUI 與影片分頁'));},60000);
+      pending.set(id,{resolve,reject,timer});
+      window.postMessage({source:'live-translator-web',type:'request',channel,id,method,args},location.origin);
+    });
+  }
+  async function command(method,args) {
+    const result=await rpc(method,args);
+    if (result?.ok===false) throw new Error(result.error || '字幕操作失敗');
+    return result;
+  }
+  function finish(current,flush=false) {
+    if (!current || current.closed || current.stopping) return;
+    current.stopping=true; current.ready=false;
+    current.stream?.getTracks().forEach(track=>track.stop());
+    current.source?.disconnect();current.processor?.disconnect();current.audioDelay?.disconnect();
+    current.context?.close().catch(()=>{});clearTimeout(current.timer);
+    if (flush && current.socket?.readyState===WebSocket.OPEN) {
+      current.socket.send(JSON.stringify({type:'eos'}));current.timer=setTimeout(()=>close(current),90000);
+    } else close(current);
+  }
+  function close(current) {
+    if (current.closed) return;
+    current.closed=true;clearTimeout(current.timer);current.socket?.close();
+    if (active===current) active=null;
+    if (channel && current.id) current.notify({type:'stopped'});
+  }
+  let helloResolve;
+  const hello=new Promise(resolve=>{helloResolve=resolve;});
+  window.addEventListener('message',event=>{
+    const message=event.data;
+    if (event.source!==window || event.origin!==location.origin || message?.source!=='live-translator-extension') return;
+    if (message.type==='hello' && message.version===1 && typeof message.channel==='string' && !channel) {channel=message.channel;helloResolve(true);return;}
+    if (message.channel!==channel || !channel) return;
+    if (message.type==='response') {
+      const entry=pending.get(message.id);if (!entry) return;
+      clearTimeout(entry.timer);pending.delete(message.id);entry.resolve(message.result);
+    } else if (message.type==='event') emit(message.event);
+    else if (message.type==='disconnected') {
+      channel=null;finish(active);
+      for (const entry of pending.values()) {clearTimeout(entry.timer);entry.reject(new Error(missing));}pending.clear();
+      const status=document.getElementById('bridge-status');if(status)status.textContent=missing;
+      emit({type:'state',state:'stopped',error:missing});
+    } else if (message.type==='control' && active?.id===message.id) {
+      if (message.control==='stop') finish(active,true);
+      if (message.control==='playback') (message.paused?active.context?.suspend():active.context?.resume())?.catch(()=>{});
+      if (message.control==='media_timeline' && active.socket?.readyState===WebSocket.OPEN) active.socket.send(JSON.stringify({type:'timeline',sample_ms:message.sample_ms,media_ms:message.media_ms,rate:message.rate}));
     }
-    session.stream?.getTracks().forEach(track => track.stop());
-    session.videoDelay?.stop(); session.audioDelay?.disconnect();
-    platform.liveDelayMs=0;
-    session.processor?.disconnect(); session.source?.disconnect();
-    await session.context?.close().catch(() => {});
-    if (finish && session.socket?.readyState === WebSocket.OPEN) {
-      emit({type: 'state', state: 'stopping'});
-      session.socket.send(JSON.stringify({type: 'eos'}));
-      session.timer = setTimeout(() => release(session), 90000);
-      return;
-    }
-    session.closed = true;
-    clearTimeout(session.timer); session.socket?.close();
-    if (active === session) {active = null; emit({type: 'state', state: 'stopped', error: session.error});}
+  });
+  async function refreshTargets() {
+    const select=document.getElementById('youtube-tab');select.disabled=true;prepared=null;
+    try {
+      const tabs=await command('tabs');const state=await command('getState');
+      const previous=selected?.id || state?.session?.tabId;
+      select.replaceChildren(...tabs.map(tab=>{const option=document.createElement('option');option.value=String(tab.id);option.textContent=tab.title || tab.url;return option;}));
+      selected=tabs.find(tab=>tab.id===previous) || tabs[0] || null;
+      if (selected) {select.value=String(selected.id);await prepare();}
+      else document.getElementById('bridge-status').textContent='橋接已連接。請先開啟 YouTube 影片，再按「更新分頁」。';
+    } finally {select.disabled=false;}
+  }
+  async function prepare() {
+    prepared=null;if (!selected) return;
+    try {prepared=await command('prepare',{tabId:selected.id});}
+    catch(error) {document.getElementById('bridge-status').textContent=error.message+'；現有字幕仍可使用。';return;}
+    document.getElementById('bridge-status').textContent='已連接原影片分頁。WebUI 與擴充功能共用設定；影片與字幕顯示在 YouTube。';
   }
   async function start() {
-    if (active) await release(active);
-    const session = {stream: platform.pendingStream, ready: false, closed: false, state: 'starting'};
-    platform.pendingStream = null; active = session;
-    const ensureActive=()=>{if(active!==session || session.stopping) throw new Error('擷取已停止');};
+    if(active && !active.closed) {
+      platform.pendingStream?.getTracks().forEach(track=>track.stop());platform.pendingStream=null;
+      return {ok:false,error:'已有音訊工作，請先停止再開始'};
+    }
+    const current={stream:platform.pendingStream,ready:false};platform.pendingStream=null;active=current;
+    let queue=Promise.resolve();
+    const notify=current.notify=event=>{queue=queue.then(()=>command('event',{id:current.id,event})).catch(error=>{emit({type:'error',message:error.message});finish(current);});};
     try {
-      if (!session.stream?.getAudioTracks().length) throw new Error('未取得音訊，請選擇 Chrome 分頁並勾選「分享分頁音訊」。');
-      session.stream.getTracks().forEach(track => track.addEventListener('ended', () => {if (!session.stopping) release(session, true);}));
-      const settings = await storage.get(['translation', 'recognition','delayMs']);
-      ensureActive();
-      platform.previewStream = session.stream;
-      const requestedDelay=Number(settings.delayMs || 0);
-      session.delayMs=[0,2000,4000,6000,8000,10000,12000].includes(requestedDelay)?requestedDelay:0;
-      if (session.delayMs && session.stream.getAudioTracks()[0].getSettings?.().suppressLocalAudioPlayback !== true) {
-        throw new Error('此來源無法抑制原分頁聲音，不能同步延遲。請使用 Chrome 分頁分享，或將觀看延遲設為「不延遲」再開始。');
+      if (!current.stream?.getAudioTracks().length) throw new Error('請選擇已選定的 YouTube 分頁，並勾選「分享分頁音訊」。');
+      const handle=current.stream.getVideoTracks()[0]?.getCaptureHandle?.();
+      if (!prepared || prepared.token!==handle?.handle || handle.origin!=='https://www.youtube.com') throw new Error('分享的分頁與選定影片不同，或瀏覽器不支援來源確認。請重新選擇同一個 YouTube 分頁。');
+      const response=await command('audio_start',{tabId:selected.id,token:prepared.token});prepared=null;
+      current.id=response.id;const settings=response.settings;current.delayMs=settings.delayMs;
+      if (current.stopping) throw new Error('擷取已停止');
+      if (current.delayMs && current.stream.getAudioTracks()[0].getSettings?.().suppressLocalAudioPlayback!==true) throw new Error('瀏覽器未抑制來源聲音，無法同步延遲；請改選「不延遲」。');
+      current.stream.getTracks().forEach(track=>track.addEventListener('ended',()=>finish(current,true)));
+      current.context=new AudioContext();await current.context.audioWorklet.addModule('/static/audio-worklet.js');
+      if (current.stopping) throw new Error('擷取已停止');
+      current.source=current.context.createMediaStreamSource(current.stream);current.processor=new AudioWorkletNode(current.context,'pcm-downsampler');
+      const mute=current.context.createGain();mute.gain.value=0;
+      current.source.connect(current.processor).connect(mute).connect(current.context.destination);
+      await command('activate_visual',{id:current.id});
+      if (current.stopping) throw new Error('擷取已停止');
+      await current.context.resume();
+      if (current.delayMs) {
+        current.audioDelay=current.context.createDelay(12);current.audioDelay.delayTime.value=current.delayMs/1000;
+        current.source.connect(current.audioDelay).connect(current.context.destination);
       }
-      platform.liveDelayMs=session.delayMs;
-      const translation = settings.translation || {provider: 'none'};
-      if (translation.provider !== 'none' && !translation.api_key && !translation.endpoint?.startsWith('http://localhost') && !translation.endpoint?.startsWith('http://127.0.0.1')) {
-        throw new Error('請先在「模型與設定」儲存直播 API Key，或選擇只辨識原文。');
-      }
-      session.context = new AudioContext();
-      await session.context.audioWorklet.addModule('/static/audio-worklet.js');
-      ensureActive();
-      session.source = session.context.createMediaStreamSource(session.stream);
-      session.processor = new AudioWorkletNode(session.context, 'pcm-downsampler');
-      const mute = session.context.createGain(); mute.gain.value = 0;
-      session.source.connect(session.processor).connect(mute).connect(session.context.destination);
-      await session.context.resume();
-      ensureActive();
-      // Replay only when capture confirms the source tab audio is suppressed.
-      if (session.delayMs) {
-        session.audioDelay=session.context.createDelay(12);
-        session.audioDelay.delayTime.value=session.delayMs/1000;
-        session.audioDelay.connect(session.context.destination);
-      }
-      const socket = session.socket = new WebSocket(location.origin.replace(/^http/, 'ws') + '/ws/audio');
-      socket.binaryType = 'arraybuffer';
-      session.timer = setTimeout(() => {emit({type: 'error', message: '本機模型載入逾時，請檢查服務視窗。'}); release(session);}, 120000);
-      socket.onopen = () => socket.send(JSON.stringify({translation: settings.translation || {provider: 'none'}, recognition: {...settings.recognition, previews: false},timeline:platform.pendingTimeline || {offset_ms:0,rate:1}}));
-      socket.onmessage = message => {
+      const socket=current.socket=new WebSocket(location.origin.replace(/^http/,'ws')+'/ws/audio');socket.binaryType='arraybuffer';
+      current.timer=setTimeout(()=>{emit({type:'error',message:'本機模型載入逾時'});finish(current);},120000);
+      socket.onopen=()=>{if(current.stopping){socket.close();return;}socket.send(JSON.stringify({translation:settings.translation || {provider:'none'},recognition:{...settings.recognition,previews:settings.captions?.mode==='bilingual' || settings.translation?.provider==='none'}}));};
+      socket.onmessage=message=>{
+        if (current.closed) return;
         try {
-          const event = JSON.parse(message.data);
-          if (event.type === 'error') session.error = event.message;
-          if (event.type === 'ready' && !session.ready && !session.stopping) {session.ready = true; session.state = 'running'; clearTimeout(session.timer); if (session.delayMs) {
-            platform.liveEpoch=performance.now();
-            session.videoDelay=createWebVideoDelay(document.getElementById('preview-video'),document.getElementById('preview-delayed-video'),session.delayMs);
-            session.source.connect(session.audioDelay);
-          }
-          if(event.transcript_id) storage.set({lastTranscriptId:event.transcript_id}).catch(() => {});}
-          emit(event);
-        } catch {emit({type: 'error', message: '本機服務回傳無效資料'}); release(session);}
+          const event=JSON.parse(message.data);
+          if(event.type==='ready' && !current.stopping) {current.ready=true;clearTimeout(current.timer);}
+          notify(event);
+        } catch {emit({type:'error',message:'本機服務回傳無效資料'});finish(current);}
       };
-      socket.onerror = () => {session.error = '音訊服務連線失敗，請檢查 start.bat。'; emit({type: 'error', message: session.error});};
-      socket.onclose = () => release(session);
-      session.processor.port.onmessage = event => {
-        if (session.ready && !session.stopping && socket.readyState === WebSocket.OPEN) {
-          if (socket.bufferedAmount > 256000) {emit({type: 'error', message: '音訊傳輸積壓，已停止擷取。'}); release(session); return;}
-          socket.send(event.data);
-        }
+      socket.onerror=()=>{notify({type:'error',message:'音訊服務連線失敗，請檢查 start.bat。'});finish(current);};
+      socket.onclose=()=>{if(!current.stopping)finish(current);else close(current);};
+      let samples=0, sinceClock=0;
+      current.processor.port.onmessage=event=>{
+        if (!current.ready || current.stopping || socket.readyState!==WebSocket.OPEN) return;
+        if(socket.bufferedAmount>256000) {notify({type:'error',message:'音訊傳輸積壓，已停止'});finish(current);return;}
+        if(!samples)notify({type:'audio_clock',start_epoch_ms:Date.now()-200});
+        if(!samples || sinceClock>=16000) {notify({type:'timeline_request',sample_ms:samples/16,epoch_ms:Date.now()-(!samples?200:0)});sinceClock=0;}
+        socket.send(event.data);samples+=event.data.byteLength/2;sinceClock+=event.data.byteLength/2;
       };
-      emit({type: 'capture_started', delay_ms: session.delayMs});
-      return {ok: true};
-    } catch (error) {await release(session); return {ok: false, error: error.message};}
+      notify({type:'capture_started',delay_ms:current.delayMs});return {ok:true};
+    } catch(error) {finish(current);if(current.id)await command('abandon',{id:current.id}).catch(()=>{});return {ok:false,error:error.message};}
   }
-  window.platform = {
-    kind: 'web', baseUrl: '', pendingStream: null,
+  const platform=window.platform={
+    kind:'web',baseUrl:'',pendingStream:null,
+    async initialize() {
+      document.getElementById('web-controls').hidden=false;
+      const status=document.getElementById('bridge-status');status.textContent='正在連接字幕橋接…';
+      const ping=()=>window.postMessage({source:'live-translator-web',type:'hello'},location.origin);
+      ping();const retry=setInterval(ping,200);
+      const connected=await Promise.race([hello,new Promise(resolve=>setTimeout(()=>resolve(false),2500))]);clearInterval(retry);
+      if (!connected) {status.textContent=missing;throw new Error(missing);}
+      document.getElementById('refresh-youtube-tabs').addEventListener('click',()=>refreshTargets().catch(error=>{status.textContent=error.message;}));
+      document.getElementById('youtube-tab').addEventListener('change',async()=>{
+        const tabs=await command('tabs');selected=tabs.find(tab=>tab.id===Number(document.getElementById('youtube-tab').value)) || null;
+        prepared=null;await prepare();
+      });
+      await refreshTargets();
+    },
     beginCapture() {
-      if (!navigator.mediaDevices?.getDisplayMedia) return Promise.reject(new Error('此瀏覽器不支援分頁擷取，請使用桌面版 Chrome。'));
+      if (!channel || !prepared) return Promise.reject(new Error(!channel?missing:'請先更新分頁並選擇 YouTube 影片。來源確認有效兩分鐘，過期請再次更新。'));
       const delay=Number(document.getElementById('delay-ms').value || 0);
-      const supports=navigator.mediaDevices.getSupportedConstraints?.() || {};
-      if (delay && !supports.suppressLocalAudioPlayback) return Promise.reject(new Error('瀏覽器不支援同步音畫延遲；請改用 Chrome，或選「不延遲」。'));
-      return navigator.mediaDevices.getDisplayMedia({video: true, audio: delay?{suppressLocalAudioPlayback:true}:true, preferCurrentTab: false, selfBrowserSurface:'exclude', systemAudio:'exclude'});
+      return navigator.mediaDevices.getDisplayMedia({video:true,audio:delay?{suppressLocalAudioPlayback:true}:true,preferCurrentTab:false,selfBrowserSurface:'exclude',systemAudio:'exclude'});
     },
-    storage: {local: storage}, tabs: {query: async () => [{id: 1}]},
-    runtime: {
-      onMessage: {addListener: listener => listeners.push(listener)},
-      async sendMessage(message) {
-        if (message.type === 'getState') return {session: active ? {state: active.stopping ? 'stopping' : active.state,source:active.captionConnection?'captions':'audio',transcriptId:active.transcriptId} : null};
-        if (message.type === 'caption_start') {
-          if (active) await release(active);
-          const settings=await storage.get(['translation','captionApiMode','captionTranslation','captionTranslationMode']);
-          const chosen=settings.captionApiMode==='independent'?settings.captionTranslation:settings.translation;
-          const current=active={state:'starting',transcriptId:message.transcript_id};
-          current.captionConnection=connectCaptions(location.origin.replace(/^http/,'ws')+'/ws/captions',{transcript_id:message.transcript_id,translation:chosen || {provider:'none'},caption_mode:settings.captionTranslationMode || 'batch'},event => {
-            if (active!==current || current.closed) return;
-            if (event.type==='ready') current.state='running';
-            if (event.type==='error') current.error=event.message;
-            if (event.type==='caption_complete') current.state='watching';
-            if (event.type==='caption_closed') {
-              if (event.completed) emit({type:'state',state:'watching',source:'captions'});
-              else release(current); return;
-            }
-            emit(event);
-          });
-          return {ok:true};
-        }
-        if (message.type === 'start') return start();
-        if (message.type === 'stop') {await release(active, true); return {ok: true};}
-        return {ok: true};
-      },
-    },
+    storage:{local:{get:keys=>channel?command('settings_get',{keys}):Promise.resolve({}),set:values=>command('settings_set',{values})}},
+    tabs:{query:async()=>selected?[selected]:[]},
+    runtime:{onMessage:{addListener:listener=>listeners.push(listener)},sendMessage:async message=>{
+      if(message.type==='start') return start();
+      if(message.type==='getState' && !channel) return {session:null};
+      const {target,type,...args}=message;return command(type,args);
+    }},
   };
-  window.addEventListener('pagehide', () => {active?.captionConnection?.close(); active?.stream?.getTracks().forEach(track => track.stop()); active?.socket?.close();});
+  window.addEventListener('pagehide',()=>{const id=active?.id;finish(active);if(channel && id)rpc('abandon',{id}).catch(()=>{});});
 })();

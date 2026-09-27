@@ -9,9 +9,10 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m unittest discover -s tests
 node tests/extension.test.cjs
 node tests/client.test.cjs
+node tests/web-bridge.test.cjs
 ```
 
-The shared UI source is `chrome-extension/panel.html`, `panel.css`, `panel.js`. Run `python build_ui.py` after edits. `web/platform.js` captures browser audio; `chrome-extension/platform.js` uses Chrome APIs. CI checks generated files for drift.
+The shared UI source is `chrome-extension/panel.html`, `panel.css`, `panel.js`. Run `python build_ui.py` after edits. `web/platform.js` uses a fixed localhost extension bridge to control the original YouTube tab and captures shared audio locally. `web-bridge.js` validates page origin, `web-control.js` restricts worker RPC and owns capture identity. `chrome-extension/platform.js` uses Chrome APIs. CI checks generated files for drift. Do not reintroduce embedded players.
 
 Backend tests use mocked inference and HTTP transports; they do not require a GPU or API key. Real audio accuracy, latency and YouTube playback must be checked separately with a GPU and the chosen API.
 
@@ -21,7 +22,7 @@ Record meaningful changes in `work_report/`, describe verification and remaining
 
 Languages live in `app/languages.py`; UI language choices must stay consistent with it. Japanese remains the migration default. Auto detection obtains the final Whisper language and uses it for the live API prompt; comment translation requires an explicit source for specialized Riva models.
 
-`app/transcripts.py` stores whole sessions in local SQLite, including independent final translation updates and playback anchors. Tests must use temporary databases and patch `app.main.transcripts`, never write fixtures into user recordings. The UI retains only 50 rows; storage must retain all cues. Export uses source media time, not delayed playback wall time. Web capture requires a manual origin because browser tab sharing does not expose the source player clock. ASS text neutralizes override syntax, and downloads include UTF-8 BOM for Windows editors.
+`app/transcripts.py` stores whole sessions in local SQLite, including independent final translation updates and playback anchors. Tests must use temporary databases and patch `app.main.transcripts`, never write fixtures into user recordings. The UI retains only 50 rows; storage must retain all cues. Export uses source media time, not delayed playback wall time. Web capture obtains the original player clock through the extension; reject wrong Capture Handles before creating a session. ASS text neutralizes override syntax, and downloads include UTF-8 BOM for Windows editors.
 
 Do not publish `data/`, API settings or audio fixtures. Verify exported timestamps and Unicode independently with a subtitle parser when changing formatting. Browser extension management is a user-operated step when browser tooling forbids it; do not bypass the restriction.
 

@@ -62,7 +62,7 @@ async function start(tabId) {
   const response = await fetch('http://127.0.0.1:8788/api/status').catch(() => null);
   if (!response?.ok) throw new Error('本機字幕服務未啟動。請執行 start.bat。');
   const status = await response.json();
-  if (status.protocol_version !== 9) throw new Error('本機字幕服務仍是舊版。請關閉舊服務，再重新執行 start.bat。');
+  if (status.protocol_version !== 10) throw new Error('本機字幕服務仍是舊版。請關閉舊服務，再重新執行 start.bat。');
   await ensureOverlay(tabId, delayMs);
   // Must be called from a user-invoked extension action or side-panel click.
   let streamId;
@@ -115,14 +115,15 @@ async function startCaptions(tabId, identity) {
   if (!response.ok) throw new Error('找不到影片字幕，請重新載入');
   const record = await response.json();
   if (record.caption_source?.video_id !== currentVideo) throw new Error('目前影片與已載入字幕不同，請重新讀取字幕');
-  const settings = await chrome.storage.local.get(['translation','captions']);
+  const settings = await chrome.storage.local.get(['translation','captions','captionApiMode','captionTranslation','captionTranslationMode']);
+  const chosen=settings.captionApiMode==='independent'?settings.captionTranslation:settings.translation;
   await ensureOverlay(tabId,0);
   const clock = await chrome.tabs.sendMessage(tabId,{target:'overlay-v3',type:'video_timeline',epoch_ms:Date.now()});
-  const current = session = {id:crypto.randomUUID(),tabId,source:'captions',provider:settings.translation?.provider || 'none',state:'starting',delayMs:0,captions:settings.captions || {size:20,mode:'translated'},transcriptId:identity,videoId:currentVideo};
+  const current = session = {id:crypto.randomUUID(),tabId,source:'captions',provider:chosen?.provider || 'none',state:'starting',delayMs:0,captions:settings.captions || {size:20,mode:'translated'},transcriptId:identity,videoId:currentVideo};
   await saveSession();
-  await broadcast({type:'state',state:'starting',source:'captions',delay_ms:0,provider:settings.translation?.provider || 'none',captions:current.captions});
+  await broadcast({type:'state',state:'starting',source:'captions',delay_ms:0,provider:chosen?.provider || 'none',captions:current.captions});
   let queue = Promise.resolve();
-  captionConnection = connectCaptions('ws://127.0.0.1:8788/ws/captions',{transcript_id:identity,translation:settings.translation || {provider:'none'},position_ms:clock?.media_ms || 0},event => {
+  captionConnection = connectCaptions('ws://127.0.0.1:8788/ws/captions',{transcript_id:identity,translation:chosen || {provider:'none'},caption_mode:settings.captionTranslationMode || 'batch',position_ms:clock?.media_ms || 0},event => {
     queue = queue.then(async () => {
       if (session?.id !== current.id) return;
       if (event.type === 'error') current.stopError=event.message;

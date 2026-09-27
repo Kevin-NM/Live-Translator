@@ -46,7 +46,7 @@ class TranslationSettingsTests(unittest.TestCase):
         self.assertEqual(calls[1]['messages'][1]['content'], 'Congratulations!')
 
     def test_protocol_version(self):
-        self.assertEqual(TestClient(app).get('/api/status').json()['protocol_version'], 9)
+        self.assertEqual(TestClient(app).get('/api/status').json()['protocol_version'], 10)
 
     def test_target_language_selection_and_riva_payload(self):
         calls = []

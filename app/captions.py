@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from app.languages import LANGUAGES
-from app.translation import TranslationConfig, translate
+from app.translation import TranslationConfig, translate, caption_batches, translate_caption_batch
 
 
 def video_id(value):
@@ -90,6 +90,14 @@ async def save_translation(store, identity, cue_id, text='', status='translated'
         raise
 
 
+async def save_batch(store, identity, translations):
+    writing = asyncio.create_task(asyncio.to_thread(store.translated_batch, identity, translations))
+    try: await asyncio.shield(writing)
+    except asyncio.CancelledError:
+        with anyio.CancelScope(shield=True): await writing
+        raise
+
+
 def create_caption_router(store):
     router = APIRouter()
     active = set()
@@ -137,6 +145,10 @@ def create_caption_router(store):
             config = TranslationConfig.from_payload(settings.get('translation',{}))
             if config.provider != 'none' and config.target_language != record['target_language']: raise ValueError('目標語言已改變，請重新載入字幕再翻譯')
             config = replace(config,source_language=record['source_language'])
+            mode = settings.get('caption_mode', 'single')
+            if mode not in ('single', 'batch'): raise ValueError('不支援的字幕翻譯模式')
+            if mode == 'batch' and config.provider != 'none' and config.model.startswith('nvidia/riva-translate-'):
+                raise ValueError('批次翻譯請設定一般聊天模型；Riva 可改用逐句模式')
             await send({'type':'captions_loaded','transcript_id':identity,'video_id':record['caption_source']['video_id'],'cues':record['cues']})
             await send({'type':'ready','transcript_id':identity,'source':'captions'})
             async def run():
@@ -144,6 +156,16 @@ def create_caption_router(store):
                 position = max(0,min(604800000,int(settings.get('position_ms',0))))
                 order = [cue for cue in cues if cue['end_ms']>position] + [cue for cue in cues if cue['end_ms']<=position]
                 complete = sum(cue['status']=='translated' for cue in cues)
+                if mode == 'batch' and config.provider != 'none':
+                    pending = [cue for cue in order if cue['status'] != 'translated']
+                    for batch in caption_batches(pending):
+                        output = await translate_caption_batch(batch, config)
+                        await save_batch(store(), identity, output)
+                        for cue in batch:
+                            await send({'type':'translation','id':cue['id'],'text':output[cue['id']]})
+                        complete += len(batch)
+                        await send({'type':'caption_progress','completed':complete,'total':len(cues)})
+                    order = []
                 failures = 0
                 for cue in order:
                     if cue['status']=='translated': continue

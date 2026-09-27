@@ -4,7 +4,7 @@
 <body>
 <a class="skip" href="#main">跳到主要內容</a>
 <div class="shell">
-  <header><div class="brand"><span class="brand-mark" aria-hidden="true">LT</span><div><strong>Live Translator</strong><small>聽懂直播，加入對話。</small></div></div><span class="version">0.8.0</span></header>
+  <header><div class="brand"><span class="brand-mark" aria-hidden="true">LT</span><div><strong>Live Translator</strong><small>聽懂直播，加入對話。</small></div></div><span class="version">0.9.0</span></header>
   <div class="connection"><span id="model-state" role="status">正在連線本機服務…</span><button id="refresh-service" class="quiet">重新檢查</button></div>
   <nav aria-label="主要功能"><button class="selected" data-page="live" aria-current="page">即時字幕</button><button data-page="chat">留言助手</button><button data-page="settings">模型與設定</button></nav>
   <main id="main">
@@ -12,14 +12,14 @@
       <div class="live-layout"><div class="live-controls">
         <p class="eyebrow">LIVE CAPTIONS</p><h1>專心看直播。<br>字幕交給我們。</h1><p id="capture-description">擷取 YouTube 分頁音訊，將譯文顯示在影片上。</p>
         <label for="subtitle-source">字幕來源</label><select id="subtitle-source"><option value="audio">即時語音辨識（直播／沒有字幕的影片）</option><option value="captions">影片現有字幕（不擷取聲音）</option></select>
-        <div id="existing-caption-tools" hidden><label for="caption-url">YouTube 影片網址</label><input id="caption-url" type="url" placeholder="https://www.youtube.com/watch?v=..."><button id="load-caption-tracks" class="quiet">讀取字幕列表</button><label for="caption-track">影片字幕軌道</label><select id="caption-track"><option value="">先讀取字幕列表</option></select><button id="load-selected-caption" class="quiet" disabled>載入選定字幕</button><p id="caption-source-info" class="hint" role="status">可選人工或自動字幕；不支援直接燒在畫面裡的文字。翻譯會使用直播 API，每句可能產生費用，載入後再按開始。</p></div>
+        <div id="existing-caption-tools" hidden><label for="caption-url">YouTube 影片網址</label><input id="caption-url" type="url" placeholder="https://www.youtube.com/watch?v=..."><button id="load-caption-tracks" class="quiet">讀取字幕列表</button><label for="caption-track">影片字幕軌道</label><select id="caption-track"><option value="">先讀取字幕列表</option></select><button id="load-selected-caption" class="quiet" disabled>載入選定字幕</button><p id="caption-source-info" class="hint" role="status">可選人工或自動字幕；不支援直接燒在畫面裡的文字。翻譯可使用獨立字幕 API，分批翻譯可能產生費用，載入後再按開始。</p></div>
         <div class="session-status"><span class="status-dot" aria-hidden="true"></span><span id="capture-status" role="status">已停止</span></div>
         <div class="actions"><button id="start" class="primary">開始擷取目前分頁</button><button id="stop" disabled>停止</button></div>
         <p id="latency-info" class="hint">收到譯文後會顯示處理時間與緩衝建議。</p>
         <dl class="session-summary"><div><dt>辨識模型</dt><dd id="summary-stt">Large v3 Turbo</dd></div><div><dt>直播翻譯</dt><dd id="summary-api">尚未設定</dd></div><div><dt>輸出語言</dt><dd id="summary-language">繁體中文（台灣）</dd></div></dl>
         <button class="text-button" data-open-settings>調整字幕與 API →</button>
       </div><div class="transcript">
-        <div id="web-preview" class="web-preview" hidden><video id="preview-video" autoplay muted playsinline></video><div id="preview-caption" class="preview-caption"></div><p class="hint">擷取預覽為靜音；聲音由來源分頁播放。</p></div>
+        <div id="web-preview" class="web-preview" hidden><div id="viewer-stage" class="viewer-stage"><button id="viewer-exit" class="viewer-exit" hidden>離開全螢幕</button><div id="youtube-player" hidden></div><video id="preview-video" autoplay muted playsinline></video><canvas id="preview-delayed-video" hidden></canvas><div id="preview-caption" class="preview-caption"></div></div><div class="viewer-actions"><button id="viewer-fullscreen" class="quiet">全螢幕觀看</button><button id="caption-smaller" class="quiet" aria-label="縮小字幕">A−</button><button id="caption-larger" class="quiet" aria-label="放大字幕">A＋</button></div><p id="viewer-info" class="hint">即時擷取的聲音由來源分頁播放；現有字幕可在此播放影片。</p></div>
         <div class="section-heading"><h2>字幕紀錄</h2><button id="clear-captions" class="quiet">清除畫面</button></div><p id="partial" class="partial" aria-live="polite"></p><div id="captions" class="captions" aria-label="字幕紀錄"><p class="muted empty">還沒有字幕<br><small>開始擷取後，原文與譯文會保留在這裡。</small></p></div>
         <div class="export-tools"><h2>轉錄與匯出</h2><p class="hint">整場文字保存於本機，可在停止擷取、完成翻譯後匯出；清除畫面不會刪除轉錄。</p>
           <label for="transcript-session">轉錄紀錄</label><select id="transcript-session"><option value="">尚無轉錄</option></select><button id="refresh-transcripts" class="quiet">重新整理紀錄</button>
@@ -66,8 +66,12 @@
         </div>
         <label for="style">回覆習慣</label><textarea id="style" maxlength="1000" placeholder="例如：短句、少用 emoji、不要太誇張"></textarea><p class="hint">聊天模型可套用習慣；Riva 專用翻譯模型不支援風格提示。</p><button id="test-chat-translation">測試留言翻譯</button>
       </fieldset>
-      <fieldset id="overlay-settings"><legend>04 / 影片上的字幕</legend><div class="field-grid"><div><label for="caption-size">字幕大小</label><select id="caption-size"><option value="16">小 · 16 px</option><option value="20" selected>標準 · 20 px</option><option value="24">大 · 24 px</option></select></div><div><label for="caption-mode">字幕內容</label><select id="caption-mode"><option value="translated">只顯示譯文</option><option value="bilingual">原文＋譯文</option></select></div></div><p class="hint">Web 套用於擷取預覽；擴充功能套用於 YouTube 影片。完整文字保留於本機轉錄。</p>
+
+      <fieldset id="overlay-settings"><legend>04 / 影片上的字幕</legend><div class="field-grid"><div><label for="caption-size">字幕大小</label><input id="caption-size" type="number" min="12" max="96" step="1" value="32"></div><div><label for="caption-mode">字幕內容</label><select id="caption-mode"><option value="translated">只顯示譯文</option><option value="bilingual">原文＋譯文</option></select></div></div><label for="caption-bottom">字幕距離底部（%）</label><input id="caption-bottom" type="range" min="0" max="45" value="8"><label for="caption-width">字幕寬度（%）</label><input id="caption-width" type="range" min="40" max="100" value="90"><label for="caption-opacity">字幕底色濃度（%）</label><input id="caption-opacity" type="range" min="0" max="100" value="72"><p class="hint">大小可輸入 12–96 px，全螢幕隨畫面放大。Web 套用於觀看區；擴充功能套用於 YouTube 影片。完整文字保留於本機轉錄。</p>
         <label for="delay-ms">觀看延遲</label><select id="delay-ms"><option value="0">不延遲</option><option value="2000">2 秒</option><option value="4000">4 秒</option><option value="6000">6 秒</option><option value="8000">8 秒</option><option value="10000">10 秒</option><option value="12000">12 秒</option></select><p id="delay-hint" class="hint">擴充功能將畫面與聲音一起延後，讓翻譯有時間完成。更換後重新開始擷取。較長延遲會降低緩衝畫質。</p>
+      </fieldset>
+      <fieldset><legend>05 / 影片現有字幕翻譯</legend><label for="caption-api-mode">字幕 API</label><select id="caption-api-mode"><option value="live">沿用直播 API</option><option value="independent">使用獨立字幕 API</option></select><label for="caption-translation-mode">翻譯方式</label><select id="caption-translation-mode"><option value="batch">整份分批翻譯（建議聊天模型）</option><option value="single">逐句翻譯（適用 Riva）</option></select><p class="hint">整份字幕自動以最多 40 句／12,000 字分批，保留時間與上下文。獨立模型只處理現有字幕；目標語言沿用「字幕翻譯成」。載入不呼叫 API，按開始才翻譯。</p><div id="caption-api-fields" hidden>
+        <label for="caption-provider">翻譯服務</label><select id="caption-provider"><option value="nvidia">NVIDIA Build</option><option value="openai">OpenAI v1 Chat Completions</option><option value="custom">自訂相容 API</option><option value="none">只有原文</option></select><label for="caption-model">字幕模型名稱</label><input id="caption-model" list="api-models" spellcheck="false"><div id="caption-endpoint-field"><label for="caption-endpoint">API 網址</label><input id="caption-endpoint" type="url"></div><label for="caption-api-key">字幕 API Key</label><input id="caption-api-key" type="password" autocomplete="off"></div>
       </fieldset>
       </div>
       <div class="save-bar"><button id="save" class="primary">儲存設定</button><span id="settings-result" role="status" aria-live="polite">API Key 僅存於此瀏覽器；不會寫入專案檔案。</span></div>
@@ -76,5 +80,5 @@
     <datalist id="api-models"><option value="google/gemma-4-31b-it"><option value="gpt-4.1-mini"><option value="nvidia/riva-translate-4b-instruct-v2"></datalist>
   </main><footer>本機辨識 · 自選翻譯 API <span>Live Translator / MIT</span></footer>
 </div>
-<script src="/static/caption-transport.js"></script><script src="/static/caption-ui.js"></script><script src="/static/platform.js"></script><script src="/static/panel.js"></script>
+<script src="/static/caption-transport.js"></script><script src="/static/caption-ui.js"></script><script src="/static/platform.js"></script><script src="/static/video-delay.js"></script><script src="/static/viewer.js"></script><script src="/static/panel.js"></script>
 </body></html>

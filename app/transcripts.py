@@ -54,6 +54,15 @@ class TranscriptStore:
             with db: db.execute('UPDATE cues SET translation=?,status=? WHERE session_id=? AND id=?', (text, status, identity, sequence))
         finally: db.close()
 
+    def translated_batch(self, identity, translations):
+        db = self.connection()
+        try:
+            with db:
+                for sequence, text in translations.items():
+                    updated = db.execute("UPDATE cues SET translation=?,status='translated' WHERE session_id=? AND id=?", (text,identity,sequence))
+                    if updated.rowcount != 1: raise ValueError('批次字幕不存在')
+        finally: db.close()
+
     def finish(self, identity):
         db = self.connection()
         try:

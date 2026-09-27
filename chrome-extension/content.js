@@ -215,7 +215,11 @@ function render() {
   if (!root) return;
   const item = selectCaption();
   const onlyTranslated = captionSettings.mode === 'translated' && provider !== 'none';
-  root.querySelector('.box').style.fontSize = `${captionSettings.size}px`;
+  const scale=Math.max(1,(host.parentElement?.clientWidth || 800)/800);
+  root.querySelector('.box').style.fontSize = `${captionSettings.size*scale}px`;
+  host.style.padding=`0 0 ${Math.max(0,Math.min(45,captionSettings.bottom ?? 8))}%`;
+  root.querySelector('.box').style.maxWidth=`${Math.max(40,Math.min(100,captionSettings.width ?? 90))}%`;
+  for (const part of [root.querySelector('.ja'),root.querySelector('.zh')]) part.style.background=`rgba(0,0,0,${Math.max(0,Math.min(100,captionSettings.opacity ?? 72))/100})`;
   root.querySelector('.box').style.display = item && (!onlyTranslated || item.translated || item.error) ? 'block' : 'none';
   const ja = root.querySelector('.ja');
   if (ja.textContent !== (item?.ja || '')) ja.textContent = item?.ja || '';
@@ -255,7 +259,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     active = ['starting','running','watching'].includes(message.state);
     if (message.provider) provider = message.provider;
     if (typeof message.delay_ms === 'number') delayMs = message.delay_ms;
-    if (message.captions) captionSettings = {size: [16,20,24].includes(message.captions.size) ? message.captions.size : 20, mode: message.captions.mode};
+    if (message.captions) captionSettings = {...message.captions, size:Math.max(12,Math.min(96,Number(message.captions.size)||32))};
     if (!active) {
       stopVideoDelay();
       captions.clear(); partial = null; audioClockEpoch = null; visualCaptureStarted = false;
@@ -264,7 +268,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } else if (message.type === 'captions_loaded') {
     loadMediaCaptions(message.cues);
   } else if (message.type === 'caption_settings') {
-    captionSettings = {size: [16,20,24].includes(message.captions?.size) ? message.captions.size : 20, mode: message.captions?.mode};
+    captionSettings = {...message.captions, size:Math.max(12,Math.min(96,Number(message.captions?.size)||32))};
   } else if (message.type === 'capture_started') {
     try {
       prepareVisual(message.delay_ms || 0);

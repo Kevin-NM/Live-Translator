@@ -11,6 +11,7 @@ def build(check=False):
         if source == "panel.html":
             for asset in ("panel.css", "caption-transport.js", "caption-ui.js", "platform.js", "panel.js"):
                 data = data.replace(f'"{asset}"', f'"/static/{asset}"')
+            data = data.replace('<script src="/static/panel.js"></script>', '<script src="/static/video-delay.js"></script><script src="/static/viewer.js"></script><script src="/static/panel.js"></script>')
         path = ROOT / "web" / target
         if check:
             if not path.exists() or path.read_text(encoding="utf-8") != data:

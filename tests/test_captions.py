@@ -1,3 +1,4 @@
+import json
 import asyncio
 import tempfile
 import threading
@@ -10,6 +11,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 from app.main import app
 from app.captions import video_id, source_code, youtube_tracks, save_translation
+from app.translation import caption_batches, parse_caption_batch, translate_caption_batch, TranslationConfig
 from app.transcripts import TranscriptStore, export_transcript
 
 
@@ -136,3 +138,80 @@ class CaptionTests(unittest.TestCase):
                 with self.assertRaises(asyncio.CancelledError):await writing
         asyncio.run(scenario())
         self.assertEqual(self.store.get(record['id'])['cues'][0]['translation'],'saved')
+
+
+class BatchTests(unittest.TestCase):
+    setUp = CaptionTests.setUp
+    tearDown = CaptionTests.tearDown
+    record = CaptionTests.record
+    def batch_job(self, identity):
+        events=[]
+        with self.client.websocket_connect('/ws/captions') as ws:
+            ws.send_json({'transcript_id':identity,'translation':self.config,'caption_mode':'batch'})
+            while True:
+                event=ws.receive_json();events.append(event)
+                if event['type'] in ('caption_complete','error'): return events
+
+    def test_full_track_batch_resume_preserves_ids_and_timestamps(self):
+        record=self.record(85);self.store.translated(record['id'],1,'saved')
+        async def output(cues, config): return {cue['id']:f"translated {cue['id']}" for cue in reversed(cues)}
+        with patch('app.captions.translate_caption_batch',side_effect=output) as worker,patch('app.captions.translate') as single:
+            events=self.batch_job(record['id'])
+            self.assertEqual([len(call.args[0]) for call in worker.call_args_list],[40,40,4])
+            self.assertEqual(events[-1]['completed'],85)
+            single.assert_not_called()
+            self.assertEqual(self.batch_job(record['id'])[-1]['completed'],85)
+            self.assertEqual(worker.call_count,3)
+        saved=self.store.get(record['id'])['cues']
+        self.assertEqual(saved[0]['translation'],'saved')
+        self.assertEqual(saved[-1]['translation'],'translated 85')
+        self.assertEqual(saved[-1]['start_ms'],420000)
+
+    def test_batch_failure_stops_without_partial_save_or_single_fallback(self):
+        record=self.record(50)
+        with patch('app.captions.translate_caption_batch',side_effect=ValueError('invalid batch')) as worker,patch('app.captions.translate') as single:
+            self.assertEqual(self.batch_job(record['id'])[-1]['type'],'error')
+            self.assertEqual(worker.call_count,1);single.assert_not_called()
+        self.assertTrue(all(cue['translation']=='' for cue in self.store.get(record['id'])['cues']))
+
+    def test_batch_atomic_transaction_rolls_back_on_missing_cue(self):
+        record=self.record()
+        with self.assertRaises(ValueError):self.store.translated_batch(record['id'],{1:'must rollback',999:'missing'})
+        self.assertEqual(self.store.get(record['id'])['cues'][0]['translation'],'')
+
+    def test_batch_limits_and_strict_response_validation(self):
+        cues=[{'id':i,'source':'x'*4000} for i in range(1,6)]
+        self.assertEqual([len(batch) for batch in caption_batches(cues)],[3,2])
+        valid=[{'id':cue['id'],'text':'譯文'} for cue in reversed(cues)]
+        self.assertEqual(set(parse_caption_batch(json.dumps(valid),cues)),set(range(1,6)))
+        for bad in [valid[:-1], valid+[valid[0]], [{**row,'id':str(row['id'])} for row in valid], [{**row,'text':''} for row in valid], [valid[0]]*5, {'rows':valid}]:
+            with self.assertRaises(ValueError):parse_caption_batch(json.dumps(bad),cues)
+        with self.assertRaises(ValueError):parse_caption_batch('truncated',cues)
+
+    def test_batch_cancel_drains_atomic_native_write(self):
+        record=self.record();started=threading.Event();gate=threading.Event();original=self.store.translated_batch
+        def slow(*args):started.set();gate.wait(2);original(*args)
+        async def scenario():
+            from app.captions import save_batch
+            with patch.object(self.store,'translated_batch',side_effect=slow):
+                writing=asyncio.create_task(save_batch(self.store,record['id'],{1:'one',2:'two'}))
+                self.assertTrue(await asyncio.to_thread(started.wait,2));writing.cancel();gate.set()
+                with self.assertRaises(asyncio.CancelledError):await writing
+        asyncio.run(scenario())
+        self.assertEqual([cue['translation'] for cue in self.store.get(record['id'])['cues']],['one','two',''])
+
+    def test_batch_riva_rejected_before_requests(self):
+        record=self.record();self.config['model']='nvidia/riva-translate-4b-instruct-v2'
+        with patch('app.captions.translate_caption_batch') as worker:
+            self.assertIn('聊天模型',self.batch_job(record['id'])[-1]['message']);worker.assert_not_called()
+
+    def test_batch_http_payload_contains_entire_chunk_without_4000_char_truncation(self):
+        import httpx
+        cues=[{'id':i,'source':'日'*2000} for i in range(1,5)]
+        config=TranslationConfig.from_payload(self.config)
+        response=httpx.Response(200,json={'choices':[{'message':{'content':json.dumps([{'id':i,'text':'譯文'} for i in range(4,0,-1)])}}]})
+        with patch('httpx.AsyncClient.post',return_value=response) as request:
+            result=asyncio.run(translate_caption_batch(cues,config))
+        body=json.loads(request.call_args.kwargs['json']['messages'][-1]['content'])
+        self.assertEqual(sum(len(row['text']) for row in body),8000)
+        self.assertEqual(result[1],'譯文')

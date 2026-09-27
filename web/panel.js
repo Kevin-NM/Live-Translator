@@ -206,10 +206,10 @@ function showEvent(event) {
 }
 async function checkService() {
   try {
-    const response = await fetch(platform.baseUrl + '/api/status', {signal: AbortSignal.timeout(5000)});
+    const response = await fetch(platform.baseUrl + '/api/status', {cache:'no-store',signal: AbortSignal.timeout(5000)});
     if (!response.ok) throw new Error('無法連線到本機服務');
     const data = await response.json();
-    if (data.protocol_version !== 10) throw new Error('本機服務仍是舊版，請關閉舊服務並重新執行 start.bat');
+    if (data.protocol_version !== 10) throw new Error(`介面需要通訊版本 10，但服務 v${data.version || '未知'} 回報 ${data.protocol_version ?? '未知'}。請先按 Ctrl+Shift+R 更新網頁；若仍不符，再確認服務啟動資料夾並重新啟動。`);
     models = data.models || [];
     const selected = $('stt-model').value || desiredModel;
     $('stt-model').replaceChildren(...models.map(model => {

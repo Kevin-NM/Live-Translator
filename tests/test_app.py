@@ -318,3 +318,43 @@ class AudioSocketTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class UiCacheTests(unittest.TestCase):
+    def test_web_assets_are_content_versioned_and_served_without_cache(self):
+        import hashlib
+        import re
+        client = TestClient(app)
+        page = client.get('/')
+        self.assertEqual(page.headers['cache-control'], 'no-store')
+        urls = re.findall(r'(?:src|href)="(/static/[^"?]+)\?v=([a-f0-9]{16})"', page.text)
+        self.assertEqual({path for path, _ in urls}, {'/static/panel.css','/static/caption-transport.js','/static/caption-ui.js','/static/platform.js','/static/video-delay.js','/static/viewer.js','/static/panel.js'})
+        for path, digest in urls:
+            response = client.get(path + '?v=' + digest)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers['cache-control'], 'no-store')
+            self.assertEqual(hashlib.sha256(response.content).hexdigest()[:16], digest)
+            conditional = client.get(path, headers={'If-None-Match': response.headers['etag']})
+            self.assertEqual(conditional.status_code, 304)
+            self.assertEqual(conditional.headers['cache-control'], 'no-store')
+        self.assertEqual(client.get('/api/status').headers['cache-control'], 'no-store')
+        self.assertEqual(client.get('/static/missing.js').headers['cache-control'], 'no-store')
+
+    def test_asset_versions_are_deterministic_and_follow_content_changes(self):
+        import build_ui
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/'web').mkdir(); (root/'chrome-extension').mkdir()
+            for path in (build_ui.ROOT/'chrome-extension').iterdir():
+                if path.is_file(): (root/'chrome-extension'/path.name).write_bytes(path.read_bytes())
+            for name in ('platform.js','viewer.js','video-delay.js'):
+                (root/'web'/name).write_bytes((build_ui.ROOT/'web'/name).read_bytes())
+            with patch.object(build_ui,'ROOT',root):
+                build_ui.build(); first = (root/'web/index.html').read_bytes()
+                build_ui.build(); self.assertEqual((root/'web/index.html').read_bytes(),first)
+                build_ui.build(check=True)
+                script = root/'chrome-extension/caption-ui.js'
+                script.write_bytes(script.read_bytes()+b'\n// cache regression fixture\n')
+                with self.assertRaises(SystemExit):build_ui.build(check=True)
+                build_ui.build(); self.assertNotEqual((root/'web/index.html').read_bytes(),first)
+                build_ui.build(check=True)

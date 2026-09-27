@@ -6,7 +6,7 @@ const path = require('node:path');
 const read = name => fs.readFileSync(path.join(__dirname, '..', name), 'utf8');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-function panel(saved = {}) {
+function panel(saved = {}, status = {version:'0.9.0',protocol_version:10}) {
   const elements = new Map();
   class Element {
     constructor() {this.value = ''; this.textContent = ''; this.handlers = {}; this.children = []; this.classList = {toggle() {}, remove() {}, add() {}};}
@@ -31,7 +31,7 @@ function panel(saved = {}) {
     tabs: {query: async () => [{id: 1}]},
     runtime: {onMessage: {addListener() {}}, sendMessage: async message => {runtimeCalls.push(message); return {ok:true};}},
   }, fetch: async (url, options) => {
-    if (url.endsWith('/api/status')) return {ok: true, json: async () => ({version:'0.9.0', protocol_version:10, models:[{id:'large-v3-turbo',label:'Turbo',ready:true}]})};
+    if (url.endsWith('/api/status')) return {ok: true, json: async () => ({...status, models:[{id:'large-v3-turbo',label:'Turbo',ready:true}]})};
     if (url.endsWith('/api/transcripts')) return {ok:true,json:async () => []};
     if (url.includes('/api/youtube/')) {
       const body=JSON.parse(options.body); youtubeRequests.push({url,body});
@@ -253,4 +253,10 @@ test('Web video delay waits correct time, bounds frame memory and clears its poo
   assert.ok(canvases.reduce((sum,frame)=>sum+frame.width*frame.height,0)<=95*640*360);
   buffer.stop();assert.equal(canvas.hidden,true);assert.equal(video.hidden,false);
   assert.ok(canvases.every(frame=>frame.width===0 && frame.height===0));
+});
+
+test('protocol mismatch reports actual service version instead of assuming old backend',async()=>{
+  const p=panel({}, {version:'0.8.0',protocol_version:9});await tick();
+  const text=p.elements.get('model-state').textContent;
+  assert.match(text,/通訊版本 10/);assert.match(text,/v0.8.0 回報 9/);assert.match(text,/Ctrl\+Shift\+R/);
 });

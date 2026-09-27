@@ -29,6 +29,14 @@ app = FastAPI(title="Live Translator")
 app.mount("/static", StaticFiles(directory=ROOT / "web"), name="static")
 app.include_router(create_caption_router(lambda:transcripts))
 
+@app.middleware("http")
+async def current_ui_assets(request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/") or request.url.path == "/api/status":
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.on_event('startup')
 async def recover_transcripts():
     await asyncio.to_thread(transcripts.recover)

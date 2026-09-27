@@ -59,10 +59,10 @@ async function start(tabId) {
   if (translation.provider !== 'none' && !translation.api_key && !translation.endpoint?.startsWith('http://localhost') && !translation.endpoint?.startsWith('http://127.0.0.1')) {
     throw new Error('請先在設定頁儲存 API Key，或選「只辨識原文」。');
   }
-  const response = await fetch('http://127.0.0.1:8788/api/status').catch(() => null);
+  const response = await fetch('http://127.0.0.1:8788/api/status',{cache:'no-store'}).catch(() => null);
   if (!response?.ok) throw new Error('本機字幕服務未啟動。請執行 start.bat。');
   const status = await response.json();
-  if (status.protocol_version !== 10) throw new Error('本機字幕服務仍是舊版。請關閉舊服務，再重新執行 start.bat。');
+  if (status.protocol_version !== 10) throw new Error(`擴充功能需要通訊版本 10，服務 v${status.version || '未知'} 回報 ${status.protocol_version ?? '未知'}。請確認服務啟動資料夾並重新啟動；更新擴充功能後也須重新載入。`);
   await ensureOverlay(tabId, delayMs);
   // Must be called from a user-invoked extension action or side-panel click.
   let streamId;

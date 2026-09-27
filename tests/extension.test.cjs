@@ -42,7 +42,8 @@ test('old backend is rejected before capture', async () => {
   const w = worker({version: 2});
   const result = await w.send({type: 'start', tabId: 1});
   assert.equal(result.ok, false);
-  assert.match(result.error, /舊版/);
+  assert.match(result.error, /通訊版本 10/);
+  assert.match(result.error, /回報 2/);
   assert.ok(!w.calls.includes('capture'));
 });
 test('visual activation is scoped to the current capture', async () => {

@@ -39,3 +39,9 @@ AI Router当前aggressive，用auto/coding委派批次取消/ID/atomicity风险�
 - 更新须关闭旧服务重新start.bat并刷新Web；仍用extension才需reload0.9.0與刷新YouTube。protocol10不兼容旧服务。
 
 验证完成后已关闭本轮测试Chrome分頁與8791服務session24283/PID54964；第一次session70106/PID47568亦已结束。保留.tmp验证资产供后续使用，不影响用户data。推荐下一轮先做真实Chrome tab共享/抑制/10s delay同步验收，再以用户选定的独立聊天模型真实翻译一段日文人工字幕，检查质量、费率、批次output限制；不应先调整时间常数掩盖API吞吐。
+
+## GitHub 更新完成（使用者後續要求）
+
+使用者後續明確要求「pls update to github」。已將功能提交 `07f9930cad28d4118e2cc423de4292c762a4045a` 推送至 `origin/master`（https://github.com/Kevin-NM/Live-Translator）。GitHub CI run `36320362013` success：https://github.com/Kevin-NM/Live-Translator/actions/runs/36320362013 ，乾淨 Linux 安裝、Web 產生檔檢查、Python48／extension13／client12測試全部通過。
+
+本次是更新 GitHub 原始碼；未建立0.9.0 tag／Release或ZIP下載資產，公開下載仍為0.8.0。此報告補充亦提交並推送，後續接續以repository與此報告為準。前述真實音訊長場同步、付費API品質和網路字幕讀取限制仍存在，不因CI通過而宣稱已驗證。
